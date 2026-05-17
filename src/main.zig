@@ -1,71 +1,39 @@
 const std = @import("std");
-const Io = std.Io;
+const zz = @import("zigzag");
 
-const carbonara = @import("carbonara");
+const Model = struct {
+    count: i32,
 
-pub fn main(init: std.process.Init) !void {
-    // Prints to stderr, unbuffered, ignoring potential errors.
-    std.debug.print("All your {s} are belong to us.\n", .{"codebase"});
+    pub const Msg = union(enum) {
+        key: zz.KeyEvent,
+    };
 
-    // This is appropriate for anything that lives as long as the process.
-    const arena: std.mem.Allocator = init.arena.allocator();
-
-    // Accessing command line arguments:
-    const args = try init.minimal.args.toSlice(arena);
-    for (args) |arg| {
-        std.log.info("arg: {s}", .{arg});
+    pub fn init(self: *Model, _: *zz.Context) zz.Cmd(Msg) {
+        self.* = .{ .count = 0 };
+        return .none;
     }
 
-    // In order to do I/O operations need an `Io` instance.
-    const io = init.io;
+    pub fn update(self: *Model, msg: Msg, _: *zz.Context) zz.Cmd(Msg) {
+        switch (msg) {
+            .key => |k| switch (k.key) {
+                .char => |c| if (c == 'q') return .quit,
+                .up => self.count += 1,
+                .down => self.count -= 1,
+                else => {},
+            },
+        }
+        return .none;
+    }
 
-    // Stdout is for the actual output of your application, for example if you
-    // are implementing gzip, then only the compressed bytes should be sent to
-    // stdout, not any debugging messages.
-    var stdout_buffer: [1024]u8 = undefined;
-    var stdout_file_writer: Io.File.Writer = .init(.stdout(), io, &stdout_buffer);
-    const stdout_writer = &stdout_file_writer.interface;
+    pub fn view(self: *const Model, ctx: *const zz.Context) []const u8 {
+        const style = (zz.Style{}).bold(true).fg(.cyan);
+        const text = std.fmt.allocPrint(ctx.allocator, "Count: {d}\n\nPress q to quit", .{self.count}) catch "Error";
+        return style.render(ctx.allocator, text) catch text;
+    }
+};
 
-    try carbonara.printAnotherMessage(stdout_writer);
-
-    try stdout_writer.flush(); // Don't forget to flush!
-}
-
-test "simple test" {
-    const gpa = std.testing.allocator;
-    var list: std.ArrayList(i32) = .empty;
-    defer list.deinit(gpa); // Try commenting this out and see if zig detects the memory leak!
-    try list.append(gpa, 42);
-    try std.testing.expectEqual(@as(i32, 42), list.pop());
-}
-
-test "fuzz example" {
-    try std.testing.fuzz({}, testOne, .{});
-}
-
-fn testOne(context: void, smith: *std.testing.Smith) !void {
-    _ = context;
-    // Try passing `--fuzz` to `zig build test` and see if it manages to fail this test case!
-
-    const gpa = std.testing.allocator;
-    var list: std.ArrayList(u8) = .empty;
-    defer list.deinit(gpa);
-    while (!smith.eos()) switch (smith.value(enum { add_data, dup_data })) {
-        .add_data => {
-            const slice = try list.addManyAsSlice(gpa, smith.value(u4));
-            smith.bytes(slice);
-        },
-        .dup_data => {
-            if (list.items.len == 0) continue;
-            if (list.items.len > std.math.maxInt(u32)) return error.SkipZigTest;
-            const len = smith.valueRangeAtMost(u32, 1, @min(32, list.items.len));
-            const off = smith.valueRangeAtMost(u32, 0, @intCast(list.items.len - len));
-            try list.appendSlice(gpa, list.items[off..][0..len]);
-            try std.testing.expectEqualSlices(
-                u8,
-                list.items[off..][0..len],
-                list.items[list.items.len - len ..],
-            );
-        },
-    };
+pub fn main(init: std.process.Init) !void {
+    var program = zz.Program(Model).init(init.gpa, init.io, init.environ_map);
+    defer program.deinit();
+    try program.run();
 }
