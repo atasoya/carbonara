@@ -5,17 +5,17 @@ const zz = @import("zigzag");
 const Tab = enum {
     trendingRepos,
     hackernews,
+    productHunt,
     arxiv,
     rss,
-    settings,
 
     pub fn name(self: Tab) []const u8 {
         return switch (self) {
             .trendingRepos => "Trending Repos",
             .hackernews => "Hacker News",
+            .productHunt => "Product Hunt",
             .arxiv => "ArXiv",
             .rss => "RSS Feeds",
-            .settings => "Settings",
         };
     }
 };
@@ -64,9 +64,9 @@ const Model = struct {
                     .char => |c| switch (c) {
                         '1' => self.active_tab = .trendingRepos,
                         '2' => self.active_tab = .hackernews,
-                        '3' => self.active_tab = .arxiv,
-                        '4' => self.active_tab = .rss,
-                        '5' => self.active_tab = .settings,
+                        '3' => self.active_tab = .productHunt,
+                        '4' => self.active_tab = .arxiv,
+                        '5' => self.active_tab = .rss,
                         'q' => return .quit,
                         else => {},
                     },
@@ -90,20 +90,20 @@ const Model = struct {
     fn nextTab(self: *Model) void {
         self.active_tab = switch (self.active_tab) {
             .trendingRepos => .hackernews,
-            .hackernews => .arxiv,
+            .hackernews => .productHunt,
+            .productHunt => .arxiv,
             .arxiv => .rss,
-            .rss => .settings,
-            .settings => .trendingRepos,
+            .rss => .trendingRepos,
         };
     }
 
     fn previousTab(self: *Model) void {
         self.active_tab = switch (self.active_tab) {
-            .trendingRepos => .settings,
+            .trendingRepos => .rss,
             .hackernews => .trendingRepos,
-            .arxiv => .hackernews,
+            .productHunt => .hackernews,
+            .arxiv => .productHunt,
             .rss => .arxiv,
-            .settings => .rss,
         };
     }
 
@@ -139,9 +139,9 @@ const Model = struct {
         const tabs = [_]Tab{
             .trendingRepos,
             .hackernews,
+            .productHunt,
             .arxiv,
             .rss,
-            .settings,
         };
 
         for (tabs, 0..) |tab, i| {
@@ -182,7 +182,7 @@ const Model = struct {
             .borderForeground(zz.Color.gray(8))
             .paddingLeft(1)
             .paddingRight(1)
-            .width(@min(ctx.width -| 2, 65));
+            .width(@min(ctx.width -| 2, 69));
 
         return bar_style.render(ctx.allocator, bar_content);
     }
@@ -201,7 +201,7 @@ const Model = struct {
             .borderAll(zz.Border.rounded)
             .borderForeground(zz.Color.gray(8))
             .paddingAll(1)
-            .width(@min(ctx.width -| 2, 65));
+            .width(@min(ctx.width -| 2, 69));
 
         const content = try std.fmt.allocPrint(
             ctx.allocator,
@@ -233,7 +233,7 @@ const Model = struct {
             .borderForeground(zz.Color.gray(6))
             .paddingLeft(1)
             .paddingRight(1)
-            .width(@min(ctx.width -| 2, 65));
+            .width(@min(ctx.width -| 2, 69));
 
         return status_style.render(ctx.allocator, help_view);
     }
