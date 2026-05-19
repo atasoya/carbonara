@@ -188,6 +188,16 @@ const Model = struct {
     }
 
     fn renderContent(self: *const Model, ctx: *const zz.Context) ![]const u8 {
+        return switch (self.active_tab) {
+            .trendingRepos => self.renderTrendingRepos(ctx),
+            .hackernews => self.renderHackerNews(ctx),
+            .productHunt => self.renderProductHunt(ctx),
+            .arxiv => self.renderArxiv(ctx),
+            .rss => self.renderRss(ctx),
+        };
+    }
+
+    fn renderTrendingRepos(self: *const Model, ctx: *const zz.Context) ![]const u8 {
         var title_style = zz.Style{};
         title_style = title_style
             .bold(true)
@@ -205,13 +215,112 @@ const Model = struct {
 
         const content = try std.fmt.allocPrint(
             ctx.allocator,
-            "{s}\n\nThis tab is currently empty.",
+            "{s}\n\nTrending repositories will be shown here.",
             .{title},
         );
 
         return box_style.render(ctx.allocator, content);
     }
 
+    fn renderHackerNews(self: *const Model, ctx: *const zz.Context) ![]const u8 {
+        var title_style = zz.Style{};
+        title_style = title_style
+            .bold(true)
+            .fg(zz.Color.white)
+            .inline_style(true);
+
+        const title = try title_style.render(ctx.allocator, self.active_tab.name());
+
+        var box_style = zz.Style{};
+        box_style = box_style
+            .borderAll(zz.Border.rounded)
+            .borderForeground(zz.Color.gray(8))
+            .paddingAll(1)
+            .width(@min(ctx.width -| 2, 69));
+
+        const content = try std.fmt.allocPrint(
+            ctx.allocator,
+            "{s}\n\nTop Hacker News stories will be shown here.",
+            .{title},
+        );
+
+        return box_style.render(ctx.allocator, content);
+    }
+
+    fn renderProductHunt(self: *const Model, ctx: *const zz.Context) ![]const u8 {
+        var title_style = zz.Style{};
+        title_style = title_style
+            .bold(true)
+            .fg(zz.Color.white)
+            .inline_style(true);
+
+        const title = try title_style.render(ctx.allocator, self.active_tab.name());
+
+        var box_style = zz.Style{};
+        box_style = box_style
+            .borderAll(zz.Border.rounded)
+            .borderForeground(zz.Color.gray(8))
+            .paddingAll(1)
+            .width(@min(ctx.width -| 2, 69));
+
+        const content = try std.fmt.allocPrint(
+            ctx.allocator,
+            "{s}\n\nProduct Hunt launches will be shown here.",
+            .{title},
+        );
+
+        return box_style.render(ctx.allocator, content);
+    }
+
+    fn renderArxiv(self: *const Model, ctx: *const zz.Context) ![]const u8 {
+        var title_style = zz.Style{};
+        title_style = title_style
+            .bold(true)
+            .fg(zz.Color.white)
+            .inline_style(true);
+
+        const title = try title_style.render(ctx.allocator, self.active_tab.name());
+
+        var box_style = zz.Style{};
+        box_style = box_style
+            .borderAll(zz.Border.rounded)
+            .borderForeground(zz.Color.gray(8))
+            .paddingAll(1)
+            .width(@min(ctx.width -| 2, 69));
+
+        const content = try std.fmt.allocPrint(
+            ctx.allocator,
+            "{s}\n\nLatest ArXiv papers will be shown here.",
+            .{title},
+        );
+
+        return box_style.render(ctx.allocator, content);
+    }
+
+    fn renderRss(self: *const Model, ctx: *const zz.Context) ![]const u8 {
+        var title_style = zz.Style{};
+        title_style = title_style
+            .bold(true)
+            .fg(zz.Color.white)
+            .inline_style(true);
+
+        const title = try title_style.render(ctx.allocator, self.active_tab.name());
+
+        var box_style = zz.Style{};
+        box_style = box_style
+            .borderAll(zz.Border.rounded)
+            .borderForeground(zz.Color.gray(8))
+            .paddingAll(1)
+            .width(@min(ctx.width -| 2, 69));
+
+        const content = try std.fmt.allocPrint(
+            ctx.allocator,
+            "{s}\n\nRSS feed items will be shown here.",
+            .{title},
+        );
+
+        return box_style.render(ctx.allocator, content);
+    }
     fn renderStatusBar(self: *const Model, ctx: *const zz.Context) ![]const u8 {
         _ = self;
 
