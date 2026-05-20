@@ -406,29 +406,30 @@ const Model = struct {
                 }
 
                 if (self.active_tab == .productHunt) {
-                    if (self.ph_disabled) return .none;
-                    switch (k.key) {
-                        .enter => {
-                            if (self.ph_loading) return .none;
-                            self.openSelectedProductHunt(ctx);
-                            return .none;
-                        },
-                        .up, .down, .page_up, .page_down, .home, .end => {
-                            if (self.ph_loading) return .none;
-                            self.ph_table.handleKey(k);
-                            self.syncPhViewport();
-                            return .none;
-                        },
-                        .char => |c| switch (c) {
-                            'j', 'k', 'g', 'G' => {
+                    if (!self.ph_disabled) {
+                        switch (k.key) {
+                            .enter => {
+                                if (self.ph_loading) return .none;
+                                self.openSelectedProductHunt(ctx);
+                                return .none;
+                            },
+                            .up, .down, .page_up, .page_down, .home, .end => {
                                 if (self.ph_loading) return .none;
                                 self.ph_table.handleKey(k);
                                 self.syncPhViewport();
                                 return .none;
                             },
+                            .char => |c| switch (c) {
+                                'j', 'k', 'g', 'G' => {
+                                    if (self.ph_loading) return .none;
+                                    self.ph_table.handleKey(k);
+                                    self.syncPhViewport();
+                                    return .none;
+                                },
+                                else => {},
+                            },
                             else => {},
-                        },
-                        else => {},
+                        }
                     }
                 }
 
