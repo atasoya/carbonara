@@ -578,12 +578,12 @@ const Model = struct {
     }
 
     fn configurePhTable(self: *Model, allocator: std.mem.Allocator, viewport_width: u16) !void {
-        const tagline_width: u16 = 24;
+        const name_width: u16 = 28;
         const votes_width: u16 = 6;
         const comments_width: u16 = 8;
         const table_overhead: u16 = 13;
-        const fixed_width = tagline_width + votes_width + comments_width + table_overhead;
-        const name_width = @min(@as(u16, 120), @max(@as(u16, 24), viewport_width -| fixed_width));
+        const fixed_width = name_width + votes_width + comments_width + table_overhead;
+        const tagline_width = viewport_width -| fixed_width;
 
         self.ph_table.setColumnWidth(0, name_width);
         self.ph_table.setColumnWidth(1, tagline_width);
