@@ -49,24 +49,38 @@ const Model = struct {
     trending_repos: trending.RepoList,
     trending_repos_table: zz.Table(3),
     trending_repos_viewport: zz.Viewport,
+    trending_loading: bool,
+    spinner: zz.Spinner,
+    runner: zz.AsyncRunner(Msg),
     show_quit_confirm: bool,
 
     pub const Msg = union(enum) {
         key: zz.KeyEvent,
         tick: zz.msg.Tick,
         window_size: struct { width: u16, height: u16 },
+        trending_loaded: trending.RepoList,
+        trending_failed,
+    };
+
+    const FetchArg = struct {
+        allocator: std.mem.Allocator,
+        io: std.Io,
     };
 
     pub fn init(self: *Model, ctx: *zz.Context) zz.Cmd(Msg) {
         self.active_tab = .trendingRepos;
         self.confirm = zz.Confirm.init("Are you sure you want to quit?");
-        self.trending_repos = trending.fetch(std.heap.page_allocator, ctx.io) catch fallbackTrendingRepos(std.heap.page_allocator) catch trending.RepoList.init(std.heap.page_allocator);
+        self.trending_repos = trending.RepoList.init(std.heap.page_allocator);
         self.trending_repos_table = zz.Table(3).init(std.heap.page_allocator);
         self.trending_repos_table.setHeaders(.{ "Repository", "Language", "Stars" });
         self.trending_repos_table.focus();
         self.trending_repos_table.show_row_borders = true;
         self.trending_repos_table.visible_rows = 100;
         self.populateTrendingReposTable(std.heap.page_allocator, 32, 11, 7);
+        self.trending_loading = true;
+        self.spinner = zz.Spinner.init();
+        self.runner = zz.AsyncRunner(Msg).init(std.heap.page_allocator);
+        _ = self.runner.spawnWithArg(FetchArg, .{ .allocator = std.heap.page_allocator, .io = ctx.io }, fetchTrendingTask);
         self.trending_repos_viewport = zz.Viewport.init(std.heap.page_allocator, 67, 14);
         self.trending_repos_viewport.setWrap(false);
         self.trending_repos_viewport.setScrollbarChars(".", "#");
@@ -76,13 +90,24 @@ const Model = struct {
         );
         self.show_quit_confirm = false;
 
-        return .none;
+        return zz.Cmd(Msg).everyMs(100);
     }
 
     pub fn update(self: *Model, msg: Msg, ctx: *zz.Context) zz.Cmd(Msg) {
         switch (msg) {
-            .tick => return .none,
+            .tick => {
+                _ = self.spinner.update(@intCast(ctx.elapsed));
+                const results = self.runner.poll();
+                for (results) |result| {
+                    self.handleTrendingResult(result);
+                }
+                return .none;
+            },
             .window_size => return .none,
+            .trending_loaded, .trending_failed => {
+                self.handleTrendingResult(msg);
+                return .none;
+            },
 
             .key => |k| {
                 if (self.show_quit_confirm) {
@@ -99,16 +124,19 @@ const Model = struct {
                 if (self.active_tab == .trendingRepos) {
                     switch (k.key) {
                         .enter => {
+                            if (self.trending_loading) return .none;
                             self.openSelectedTrendingRepo(ctx);
                             return .none;
                         },
                         .up, .down, .page_up, .page_down, .home, .end => {
+                            if (self.trending_loading) return .none;
                             self.trending_repos_table.handleKey(k);
                             self.syncTrendingReposViewport();
                             return .none;
                         },
                         .char => |c| switch (c) {
                             'j', 'k', 'g', 'G' => {
+                                if (self.trending_loading) return .none;
                                 self.trending_repos_table.handleKey(k);
                                 self.syncTrendingReposViewport();
                                 return .none;
@@ -172,6 +200,34 @@ const Model = struct {
 
     fn viewportHeight(ctx: *const zz.Context) u16 {
         return @max(@as(u16, 5), @min(ctx.height -| 14, @as(u16, 18)));
+    }
+
+    fn fetchTrendingTask(arg: FetchArg) ?Msg {
+        const repos = trending.fetch(arg.allocator, arg.io) catch return .trending_failed;
+        return .{ .trending_loaded = repos };
+    }
+
+    fn handleTrendingResult(self: *Model, msg: Msg) void {
+        switch (msg) {
+            .trending_loaded => |repos| {
+                self.trending_repos.deinit();
+                self.trending_repos = repos;
+                self.trending_loading = false;
+                self.trending_repos_table.cursor_row = 0;
+                self.trending_repos_table.y_offset = 0;
+                self.trending_repos_viewport.scrollTo(0, 0);
+            },
+            .trending_failed => {
+                if (!self.trending_loading) return;
+                self.trending_repos.deinit();
+                self.trending_repos = fallbackTrendingRepos(std.heap.page_allocator) catch trending.RepoList.init(std.heap.page_allocator);
+                self.trending_loading = false;
+                self.trending_repos_table.cursor_row = 0;
+                self.trending_repos_table.y_offset = 0;
+                self.trending_repos_viewport.scrollTo(0, 0);
+            },
+            else => {},
+        }
     }
 
     fn configureTrendingReposTable(self: *Model, allocator: std.mem.Allocator, viewport_width: u16) !void {
@@ -332,24 +388,31 @@ const Model = struct {
 
         const title = try title_style.render(ctx.allocator, self.active_tab.name());
         const mutable_self: *Model = @constCast(self);
-        const viewport_width = panelWidth(ctx) -| 6;
-        mutable_self.trending_repos_viewport.setSize(viewport_width, viewportHeight(ctx));
-        try mutable_self.configureTrendingReposTable(ctx.allocator, viewport_width -| 1);
-        const table_content = try self.trending_repos_table.view(ctx.allocator);
-        try mutable_self.trending_repos_viewport.setContent(table_content);
-        const table_view = try mutable_self.trending_repos_viewport.view(ctx.allocator);
+        const content_body = if (self.trending_loading) blk: {
+            const loading = try self.spinner.viewWithTitle(ctx.allocator, "Loading trending repositories...");
+            break :blk zz.place.place(ctx.allocator, panelWidth(ctx) -| 6, viewportHeight(ctx), .center, .middle, loading) catch loading;
+        } else blk: {
+            const viewport_width = panelWidth(ctx) -| 6;
+            mutable_self.trending_repos_viewport.setSize(viewport_width, viewportHeight(ctx));
+            try mutable_self.configureTrendingReposTable(ctx.allocator, viewport_width -| 1);
+            const table_content = try self.trending_repos_table.view(ctx.allocator);
+            try mutable_self.trending_repos_viewport.setContent(table_content);
+            break :blk try mutable_self.trending_repos_viewport.view(ctx.allocator);
+        };
 
         var help_style = zz.Style{};
         help_style = help_style
             .fg(zz.Color.gray(10))
             .inline_style(true);
 
-        const selected = self.trending_repos_table.selectedRow() + 1;
-        const help_text = try std.fmt.allocPrint(
-            ctx.allocator,
-            "j/k Up/Down: select  PgUp/PgDn: page  g/G: ends  Enter: open  {d}/{d}",
-            .{ selected, self.trending_repos_table.rows.items.len },
-        );
+        const help_text = if (self.trending_loading)
+            "Fetching live OSS Insight data..."
+        else
+            try std.fmt.allocPrint(
+                ctx.allocator,
+                "j/k Up/Down: select  PgUp/PgDn: page  g/G: ends  Enter: open  {d}/{d}",
+                .{ self.trending_repos_table.selectedRow() + 1, self.trending_repos_table.rows.items.len },
+            );
         const help = try help_style.render(ctx.allocator, help_text);
 
         var box_style = zz.Style{};
@@ -362,7 +425,7 @@ const Model = struct {
         const content = try std.fmt.allocPrint(
             ctx.allocator,
             "{s}\n\n{s}\n\n{s}",
-            .{ title, table_view, help },
+            .{ title, content_body, help },
         );
 
         return box_style.render(ctx.allocator, content);
@@ -494,6 +557,7 @@ const Model = struct {
     }
 
     pub fn deinit(self: *Model) void {
+        self.runner.deinit();
         self.trending_repos_table.deinit();
         self.trending_repos_viewport.deinit();
         self.trending_repos.deinit();
