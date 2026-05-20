@@ -1,6 +1,29 @@
 const std = @import("std");
 const Writer = std.Io.Writer;
 const zz = @import("zigzag");
+const trending = @import("trending.zig");
+
+const max_panel_width = 140;
+
+fn fallbackTrendingRepos(allocator: std.mem.Allocator) !trending.RepoList {
+    var repos = trending.RepoList.init(allocator);
+    errdefer repos.deinit();
+
+    try repos.add("ghostty-org/ghostty", "Zig", "34.8k");
+    try repos.add("sharkdp/fd", "Rust", "34.1k");
+    try repos.add("astral-sh/uv", "Rust", "55.3k");
+    try repos.add("zed-industries/zed", "Rust", "58.7k");
+    try repos.add("oven-sh/bun", "Zig", "77.2k");
+    try repos.add("helix-editor/helix", "Rust", "39.6k");
+    try repos.add("charmbracelet/bubbletea", "Go", "31.4k");
+    try repos.add("tursodatabase/turso", "Rust", "12.9k");
+    try repos.add("vercel/next.js", "TypeScript", "128k");
+    try repos.add("sveltejs/svelte", "TypeScript", "81.5k");
+    try repos.add("neovim/neovim", "Vim Script", "88.2k");
+    try repos.add("ziglang/zig", "Zig", "40.3k");
+
+    return repos;
+}
 
 const Tab = enum {
     trendingRepos,
@@ -23,6 +46,9 @@ const Tab = enum {
 const Model = struct {
     active_tab: Tab,
     confirm: zz.Confirm,
+    trending_repos: trending.RepoList,
+    trending_repos_table: zz.Table(3),
+    trending_repos_viewport: zz.Viewport,
     show_quit_confirm: bool,
 
     pub const Msg = union(enum) {
@@ -32,18 +58,28 @@ const Model = struct {
     };
 
     pub fn init(self: *Model, ctx: *zz.Context) zz.Cmd(Msg) {
-        _ = ctx;
-
         self.active_tab = .trendingRepos;
         self.confirm = zz.Confirm.init("Are you sure you want to quit?");
+        self.trending_repos = trending.fetch(std.heap.page_allocator, ctx.io) catch fallbackTrendingRepos(std.heap.page_allocator) catch trending.RepoList.init(std.heap.page_allocator);
+        self.trending_repos_table = zz.Table(3).init(std.heap.page_allocator);
+        self.trending_repos_table.setHeaders(.{ "Repository", "Language", "Stars" });
+        self.trending_repos_table.focus();
+        self.trending_repos_table.show_row_borders = true;
+        self.trending_repos_table.visible_rows = 100;
+        self.populateTrendingReposTable(std.heap.page_allocator, 32, 11, 7);
+        self.trending_repos_viewport = zz.Viewport.init(std.heap.page_allocator, 67, 14);
+        self.trending_repos_viewport.setWrap(false);
+        self.trending_repos_viewport.setScrollbarChars(".", "#");
+        self.trending_repos_viewport.setScrollbarStyle(
+            (zz.Style{}).fg(.gray(8)).inline_style(true),
+            (zz.Style{}).fg(.cyan).inline_style(true),
+        );
         self.show_quit_confirm = false;
 
         return .none;
     }
 
     pub fn update(self: *Model, msg: Msg, ctx: *zz.Context) zz.Cmd(Msg) {
-        _ = ctx;
-
         switch (msg) {
             .tick => return .none,
             .window_size => return .none,
@@ -58,6 +94,29 @@ const Model = struct {
                     }
 
                     return .none;
+                }
+
+                if (self.active_tab == .trendingRepos) {
+                    switch (k.key) {
+                        .enter => {
+                            self.openSelectedTrendingRepo(ctx);
+                            return .none;
+                        },
+                        .up, .down, .page_up, .page_down, .home, .end => {
+                            self.trending_repos_table.handleKey(k);
+                            self.syncTrendingReposViewport();
+                            return .none;
+                        },
+                        .char => |c| switch (c) {
+                            'j', 'k', 'g', 'G' => {
+                                self.trending_repos_table.handleKey(k);
+                                self.syncTrendingReposViewport();
+                                return .none;
+                            },
+                            else => {},
+                        },
+                        else => {},
+                    }
                 }
 
                 switch (k.key) {
@@ -107,6 +166,71 @@ const Model = struct {
         };
     }
 
+    fn panelWidth(ctx: *const zz.Context) u16 {
+        return @min(ctx.width -| 2, @as(u16, max_panel_width));
+    }
+
+    fn viewportHeight(ctx: *const zz.Context) u16 {
+        return @max(@as(u16, 5), @min(ctx.height -| 14, @as(u16, 18)));
+    }
+
+    fn configureTrendingReposTable(self: *Model, allocator: std.mem.Allocator, viewport_width: u16) !void {
+        const lang_width: u16 = 12;
+        const stars_width: u16 = 7;
+        const table_overhead: u16 = 10;
+        const fixed_width = lang_width + stars_width + table_overhead;
+        const repo_width = @min(@as(u16, 80), @max(@as(u16, 24), viewport_width -| fixed_width));
+
+        self.trending_repos_table.setColumnWidth(0, repo_width);
+        self.trending_repos_table.setColumnWidth(1, lang_width);
+        self.trending_repos_table.setColumnWidth(2, stars_width);
+        self.populateTrendingReposTable(allocator, repo_width, lang_width, stars_width);
+    }
+
+    fn populateTrendingReposTable(self: *Model, allocator: std.mem.Allocator, repo_width: usize, lang_width: usize, stars_width: usize) void {
+        self.trending_repos_table.clearRows();
+        for (self.trending_repos.items.items) |repo| {
+            self.trending_repos_table.addRow(.{
+                truncateForWidth(allocator, repo.name, repo_width) catch repo.name,
+                truncateForWidth(allocator, repo.language, lang_width) catch repo.language,
+                truncateForWidth(allocator, repo.stars, stars_width) catch repo.stars,
+            }) catch {};
+        }
+    }
+
+    fn truncateForWidth(allocator: std.mem.Allocator, text: []const u8, width: usize) ![]const u8 {
+        if (text.len <= width) return text;
+        if (width <= 3) return text[0..@min(text.len, width)];
+
+        return try std.fmt.allocPrint(allocator, "{s}...", .{text[0 .. width - 3]});
+    }
+
+    fn openSelectedTrendingRepo(self: *const Model, ctx: *zz.Context) void {
+        const selected = self.trending_repos_table.selectedRow();
+        if (selected >= self.trending_repos.items.items.len) return;
+
+        var child = std.process.spawn(ctx.io, .{
+            .argv = &.{ "open", self.trending_repos.items.items[selected].url },
+            .stdin = .ignore,
+            .stdout = .ignore,
+            .stderr = .ignore,
+        }) catch return;
+        _ = child.wait(ctx.io) catch {};
+    }
+
+    fn syncTrendingReposViewport(self: *Model) void {
+        const selected = self.trending_repos_table.selectedRow();
+        const header_lines: usize = 3;
+        const row_stride: usize = if (self.trending_repos_table.show_row_borders) 2 else 1;
+        const row_line = header_lines + selected * row_stride;
+
+        if (row_line < self.trending_repos_viewport.y_offset) {
+            self.trending_repos_viewport.scrollTo(row_line, 0);
+        } else if (row_line >= self.trending_repos_viewport.y_offset + self.trending_repos_viewport.height) {
+            self.trending_repos_viewport.scrollTo(row_line - self.trending_repos_viewport.height + 1, 0);
+        }
+    }
+
     pub fn view(self: *const Model, ctx: *const zz.Context) []const u8 {
         const tab_bar = self.renderTabBar(ctx) catch return "Error rendering tab bar";
         const content = self.renderContent(ctx) catch return "Error rendering content";
@@ -133,9 +257,6 @@ const Model = struct {
     }
 
     fn renderTabBar(self: *const Model, ctx: *const zz.Context) ![]const u8 {
-        var result: Writer.Allocating = .init(ctx.allocator);
-        const writer = &result.writer;
-
         const tabs = [_]Tab{
             .trendingRepos,
             .hackernews,
@@ -144,14 +265,19 @@ const Model = struct {
             .rss,
         };
 
-        for (tabs, 0..) |tab, i| {
-            if (i > 0) try writer.writeAll("  ");
+        const content_width: usize = panelWidth(ctx) -| 4;
+        const slot_base = content_width / tabs.len;
+        const extra_slots = content_width % tabs.len;
+        var slots: [tabs.len][]const u8 = undefined;
 
+        for (tabs, 0..) |tab, i| {
             const label = try std.fmt.allocPrint(
                 ctx.allocator,
                 "{d}:{s}",
                 .{ i + 1, tab.name() },
             );
+
+            const slot_width = slot_base + if (i < extra_slots) @as(usize, 1) else 0;
 
             if (tab == self.active_tab) {
                 var active_style = zz.Style{};
@@ -162,7 +288,7 @@ const Model = struct {
                     .inline_style(true);
 
                 const styled = try active_style.render(ctx.allocator, label);
-                try writer.writeAll(styled);
+                slots[i] = try zz.placeHorizontal(ctx.allocator, slot_width, .center, styled);
             } else {
                 var tab_style = zz.Style{};
                 tab_style = tab_style
@@ -170,11 +296,11 @@ const Model = struct {
                     .inline_style(true);
 
                 const styled = try tab_style.render(ctx.allocator, label);
-                try writer.writeAll(styled);
+                slots[i] = try zz.placeHorizontal(ctx.allocator, slot_width, .center, styled);
             }
         }
 
-        const bar_content = try result.toOwnedSlice();
+        const bar_content = try zz.joinHorizontal(ctx.allocator, &slots);
 
         var bar_style = zz.Style{};
         bar_style = bar_style
@@ -182,7 +308,7 @@ const Model = struct {
             .borderForeground(zz.Color.gray(8))
             .paddingLeft(1)
             .paddingRight(1)
-            .width(@min(ctx.width -| 2, 69));
+            .width(panelWidth(ctx));
 
         return bar_style.render(ctx.allocator, bar_content);
     }
@@ -205,18 +331,38 @@ const Model = struct {
             .inline_style(true);
 
         const title = try title_style.render(ctx.allocator, self.active_tab.name());
+        const mutable_self: *Model = @constCast(self);
+        const viewport_width = panelWidth(ctx) -| 6;
+        mutable_self.trending_repos_viewport.setSize(viewport_width, viewportHeight(ctx));
+        try mutable_self.configureTrendingReposTable(ctx.allocator, viewport_width -| 1);
+        const table_content = try self.trending_repos_table.view(ctx.allocator);
+        try mutable_self.trending_repos_viewport.setContent(table_content);
+        const table_view = try mutable_self.trending_repos_viewport.view(ctx.allocator);
+
+        var help_style = zz.Style{};
+        help_style = help_style
+            .fg(zz.Color.gray(10))
+            .inline_style(true);
+
+        const selected = self.trending_repos_table.selectedRow() + 1;
+        const help_text = try std.fmt.allocPrint(
+            ctx.allocator,
+            "j/k Up/Down: select  PgUp/PgDn: page  g/G: ends  Enter: open  {d}/{d}",
+            .{ selected, self.trending_repos_table.rows.items.len },
+        );
+        const help = try help_style.render(ctx.allocator, help_text);
 
         var box_style = zz.Style{};
         box_style = box_style
             .borderAll(zz.Border.rounded)
             .borderForeground(zz.Color.gray(8))
             .paddingAll(1)
-            .width(@min(ctx.width -| 2, 69));
+            .width(panelWidth(ctx));
 
         const content = try std.fmt.allocPrint(
             ctx.allocator,
-            "{s}\n\nTrending repositories will be shown here.",
-            .{title},
+            "{s}\n\n{s}\n\n{s}",
+            .{ title, table_view, help },
         );
 
         return box_style.render(ctx.allocator, content);
@@ -236,7 +382,7 @@ const Model = struct {
             .borderAll(zz.Border.rounded)
             .borderForeground(zz.Color.gray(8))
             .paddingAll(1)
-            .width(@min(ctx.width -| 2, 69));
+            .width(panelWidth(ctx));
 
         const content = try std.fmt.allocPrint(
             ctx.allocator,
@@ -261,7 +407,7 @@ const Model = struct {
             .borderAll(zz.Border.rounded)
             .borderForeground(zz.Color.gray(8))
             .paddingAll(1)
-            .width(@min(ctx.width -| 2, 69));
+            .width(panelWidth(ctx));
 
         const content = try std.fmt.allocPrint(
             ctx.allocator,
@@ -286,7 +432,7 @@ const Model = struct {
             .borderAll(zz.Border.rounded)
             .borderForeground(zz.Color.gray(8))
             .paddingAll(1)
-            .width(@min(ctx.width -| 2, 69));
+            .width(panelWidth(ctx));
 
         const content = try std.fmt.allocPrint(
             ctx.allocator,
@@ -311,7 +457,7 @@ const Model = struct {
             .borderAll(zz.Border.rounded)
             .borderForeground(zz.Color.gray(8))
             .paddingAll(1)
-            .width(@min(ctx.width -| 2, 69));
+            .width(panelWidth(ctx));
 
         const content = try std.fmt.allocPrint(
             ctx.allocator,
@@ -327,7 +473,7 @@ const Model = struct {
         var help_comp = zz.components.Help.init(ctx.allocator);
         defer help_comp.deinit();
 
-        try help_comp.addBinding("1-6", "tabs");
+        try help_comp.addBinding("1-5", "tabs");
         try help_comp.addBinding("Tab", "next");
         try help_comp.addBinding("Shift+Tab", "previous");
         try help_comp.addBinding("q", "quit");
@@ -342,13 +488,15 @@ const Model = struct {
             .borderForeground(zz.Color.gray(6))
             .paddingLeft(1)
             .paddingRight(1)
-            .width(@min(ctx.width -| 2, 69));
+            .width(panelWidth(ctx));
 
         return status_style.render(ctx.allocator, help_view);
     }
 
     pub fn deinit(self: *Model) void {
-        _ = self;
+        self.trending_repos_table.deinit();
+        self.trending_repos_viewport.deinit();
+        self.trending_repos.deinit();
     }
 };
 
