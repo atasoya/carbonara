@@ -520,7 +520,7 @@ const Model = struct {
         const stars_width: u16 = 7;
         const table_overhead: u16 = 10;
         const fixed_width = lang_width + stars_width + table_overhead;
-        const repo_width = @min(@as(u16, 80), @max(@as(u16, 24), viewport_width -| fixed_width));
+        const repo_width = @min(@as(u16, 120), @max(@as(u16, 24), viewport_width -| fixed_width));
 
         self.trending_repos_table.setColumnWidth(0, repo_width);
         self.trending_repos_table.setColumnWidth(1, lang_width);
@@ -578,9 +578,9 @@ const Model = struct {
         const tagline_width: u16 = 24;
         const votes_width: u16 = 6;
         const comments_width: u16 = 8;
-        const table_overhead: u16 = 14;
+        const table_overhead: u16 = 13;
         const fixed_width = tagline_width + votes_width + comments_width + table_overhead;
-        const name_width = @min(@as(u16, 80), @max(@as(u16, 16), viewport_width -| fixed_width));
+        const name_width = @min(@as(u16, 120), @max(@as(u16, 24), viewport_width -| fixed_width));
 
         self.ph_table.setColumnWidth(0, name_width);
         self.ph_table.setColumnWidth(1, tagline_width);
@@ -659,7 +659,7 @@ const Model = struct {
         const by_width: u16 = 15;
         const score_width: u16 = 6;
         const comments_width: u16 = 8;
-        const table_overhead: u16 = 14;
+        const table_overhead: u16 = 13;
         const fixed_width = by_width + score_width + comments_width + table_overhead;
         const title_width = @min(@as(u16, 120), @max(@as(u16, 24), viewport_width -| fixed_width));
 
@@ -746,7 +746,7 @@ const Model = struct {
         const date_width: u16 = 10;
         const cat_width: u16 = 8;
         const authors_width: u16 = 18;
-        const table_overhead: u16 = 16;
+        const table_overhead: u16 = 13;
         const fixed_width = date_width + cat_width + authors_width + table_overhead;
         const title_width = @min(@as(u16, 120), @max(@as(u16, 24), viewport_width -| fixed_width));
 
