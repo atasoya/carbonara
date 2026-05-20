@@ -4,6 +4,11 @@ const zz = @import("zigzag");
 const trending = @import("trending.zig");
 const hackernews = @import("hackernews.zig");
 const arxiv = @import("arxiv.zig");
+const config_mod = @import("config.zig");
+const rss = @import("rss.zig");
+const ph = @import("producthunt.zig");
+
+var product_hunt_token: ?[]const u8 = null;
 
 const max_panel_width = 140;
 
@@ -38,6 +43,19 @@ fn fallbackHackerNews(allocator: std.mem.Allocator) !hackernews.StoryList {
     try stories.add("Why Functional Programming Matters", "fp_fan", "55", "28", "https://example.com/fp");
 
     return stories;
+}
+
+fn fallbackRss(allocator: std.mem.Allocator) !rss.FeedItemList {
+    var items = rss.FeedItemList.init(allocator);
+    errdefer items.deinit();
+
+    try items.add("Core Team Member Spotlight: Alex Rønne Petersen", "https://ziglang.org/news/core-team-spotlight-alexrp/", "2026-04-18", "ziglang.org");
+    try items.add("0.16.0 Released", "https://ziglang.org/news/0.16.0-released/", "2026-04-14", "ziglang.org");
+    try items.add("Migrating from GitHub to Codeberg", "https://ziglang.org/news/migrating-from-github-to-codeberg/", "2025-11-26", "ziglang.org");
+    try items.add("The First ziglang.org Outage", "https://ziglang.org/news/first-outage/", "2025-09-08", "ziglang.org");
+    try items.add("2025 Financial Report and Fundraiser", "https://ziglang.org/news/2025-financials/", "2025-09-02", "ziglang.org");
+
+    return items;
 }
 
 fn fallbackArxiv(allocator: std.mem.Allocator) !arxiv.PaperList {
@@ -79,6 +97,11 @@ const Model = struct {
     trending_repos_table: zz.Table(3),
     trending_repos_viewport: zz.Viewport,
     trending_loading: bool,
+    ph_posts: ph.PostList,
+    ph_table: zz.Table(4),
+    ph_viewport: zz.Viewport,
+    ph_loading: bool,
+    ph_disabled: bool,
     hn_stories: hackernews.StoryList,
     hn_table: zz.Table(4),
     hn_viewport: zz.Viewport,
@@ -87,6 +110,13 @@ const Model = struct {
     arxiv_table: zz.Table(4),
     arxiv_viewport: zz.Viewport,
     arxiv_loading: bool,
+    config: config_mod.Config,
+    rss_items: rss.FeedItemList,
+    rss_table: zz.Table(3),
+    rss_viewport: zz.Viewport,
+    rss_loading: bool,
+    rss_feed_count: usize,
+    rss_completed: usize,
     spinner: zz.Spinner,
     runner: zz.AsyncRunner(Msg),
     show_quit_confirm: bool,
@@ -101,11 +131,17 @@ const Model = struct {
         hackernews_failed,
         arxiv_loaded: arxiv.PaperList,
         arxiv_failed,
+        rss_loaded: rss.FeedItemList,
+        rss_failed,
+        producthunt_loaded: ph.PostList,
+        producthunt_failed,
     };
 
     const FetchArg = struct {
         allocator: std.mem.Allocator,
         io: std.Io,
+        rss_url: ?[]const u8 = null,
+        ph_token: ?[]const u8 = null,
     };
 
     pub fn init(self: *Model, ctx: *zz.Context) zz.Cmd(Msg) {
@@ -119,6 +155,21 @@ const Model = struct {
         self.trending_repos_table.visible_rows = 100;
         self.populateTrendingReposTable(std.heap.page_allocator, 32, 11, 7);
         self.trending_loading = true;
+        self.ph_posts = ph.PostList.init(std.heap.page_allocator);
+        self.ph_table = zz.Table(4).init(std.heap.page_allocator);
+        self.ph_table.setHeaders(.{ "Name", "Tagline", "Votes", "Comments" });
+        self.ph_table.focus();
+        self.ph_table.show_row_borders = true;
+        self.ph_table.visible_rows = 100;
+        self.ph_loading = false;
+        self.ph_disabled = true;
+        self.ph_viewport = zz.Viewport.init(std.heap.page_allocator, 67, 14);
+        self.ph_viewport.setWrap(false);
+        self.ph_viewport.setScrollbarChars(".", "#");
+        self.ph_viewport.setScrollbarStyle(
+            (zz.Style{}).fg(.gray(8)).inline_style(true),
+            (zz.Style{}).fg(.cyan).inline_style(true),
+        );
         self.hn_stories = hackernews.StoryList.init(std.heap.page_allocator);
         self.hn_table = zz.Table(4).init(std.heap.page_allocator);
         self.hn_table.setHeaders(.{ "Title", "By", "Score", "Comments" });
@@ -149,11 +200,44 @@ const Model = struct {
             (zz.Style{}).fg(.gray(8)).inline_style(true),
             (zz.Style{}).fg(.cyan).inline_style(true),
         );
+        self.config = config_mod.Config.load(std.heap.page_allocator, ctx.io, ctx.home_dir);
+        self.rss_items = rss.FeedItemList.init(std.heap.page_allocator);
+        self.rss_table = zz.Table(3).init(std.heap.page_allocator);
+        self.rss_table.setHeaders(.{ "Title", "Source", "Date" });
+        self.rss_table.focus();
+        self.rss_table.show_row_borders = true;
+        self.rss_table.visible_rows = 100;
+        self.rss_loading = self.config.rss_feeds.len > 0;
+        self.rss_feed_count = self.config.rss_feeds.len;
+        self.rss_completed = 0;
+        self.rss_viewport = zz.Viewport.init(std.heap.page_allocator, 67, 14);
+        self.rss_viewport.setWrap(false);
+        self.rss_viewport.setScrollbarChars(".", "#");
+        self.rss_viewport.setScrollbarStyle(
+            (zz.Style{}).fg(.gray(8)).inline_style(true),
+            (zz.Style{}).fg(.cyan).inline_style(true),
+        );
         self.spinner = zz.Spinner.init();
         self.runner = zz.AsyncRunner(Msg).init(std.heap.page_allocator);
         _ = self.runner.spawnWithArg(FetchArg, .{ .allocator = std.heap.page_allocator, .io = ctx.io }, fetchTrendingTask);
         _ = self.runner.spawnWithArg(FetchArg, .{ .allocator = std.heap.page_allocator, .io = ctx.io }, fetchHackerNewsTask);
         _ = self.runner.spawnWithArg(FetchArg, .{ .allocator = std.heap.page_allocator, .io = ctx.io }, fetchArxivTask);
+        for (self.config.rss_feeds) |url| {
+            _ = self.runner.spawnWithArg(FetchArg, .{
+                .allocator = std.heap.page_allocator,
+                .io = ctx.io,
+                .rss_url = url,
+            }, fetchRssTask);
+        }
+        if (product_hunt_token) |token| {
+            self.ph_disabled = false;
+            self.ph_loading = true;
+            _ = self.runner.spawnWithArg(FetchArg, .{
+                .allocator = std.heap.page_allocator,
+                .io = ctx.io,
+                .ph_token = token,
+            }, fetchProductHuntTask);
+        }
         self.trending_repos_viewport = zz.Viewport.init(std.heap.page_allocator, 67, 14);
         self.trending_repos_viewport.setWrap(false);
         self.trending_repos_viewport.setScrollbarChars(".", "#");
@@ -176,6 +260,8 @@ const Model = struct {
                         .trending_loaded, .trending_failed => self.handleTrendingResult(result),
                         .hackernews_loaded, .hackernews_failed => self.handleHackerNewsResult(result),
                         .arxiv_loaded, .arxiv_failed => self.handleArxivResult(result),
+                        .rss_loaded, .rss_failed => self.handleRssResult(result),
+                        .producthunt_loaded, .producthunt_failed => self.handleProductHuntResult(result),
                         else => {},
                     }
                 }
@@ -192,6 +278,14 @@ const Model = struct {
             },
             .arxiv_loaded, .arxiv_failed => {
                 self.handleArxivResult(msg);
+                return .none;
+            },
+            .rss_loaded, .rss_failed => {
+                self.handleRssResult(msg);
+                return .none;
+            },
+            .producthunt_loaded, .producthunt_failed => {
+                self.handleProductHuntResult(msg);
                 return .none;
             },
 
@@ -277,6 +371,59 @@ const Model = struct {
                                 if (self.arxiv_loading) return .none;
                                 self.arxiv_table.handleKey(k);
                                 self.syncArxivViewport();
+                                return .none;
+                            },
+                            else => {},
+                        },
+                        else => {},
+                    }
+                }
+
+                if (self.active_tab == .rss) {
+                    switch (k.key) {
+                        .enter => {
+                            if (self.rss_loading) return .none;
+                            self.openSelectedRss(ctx);
+                            return .none;
+                        },
+                        .up, .down, .page_up, .page_down, .home, .end => {
+                            if (self.rss_loading) return .none;
+                            self.rss_table.handleKey(k);
+                            self.syncRssViewport();
+                            return .none;
+                        },
+                        .char => |c| switch (c) {
+                            'j', 'k', 'g', 'G' => {
+                                if (self.rss_loading) return .none;
+                                self.rss_table.handleKey(k);
+                                self.syncRssViewport();
+                                return .none;
+                            },
+                            else => {},
+                        },
+                        else => {},
+                    }
+                }
+
+                if (self.active_tab == .productHunt) {
+                    if (self.ph_disabled) return .none;
+                    switch (k.key) {
+                        .enter => {
+                            if (self.ph_loading) return .none;
+                            self.openSelectedProductHunt(ctx);
+                            return .none;
+                        },
+                        .up, .down, .page_up, .page_down, .home, .end => {
+                            if (self.ph_loading) return .none;
+                            self.ph_table.handleKey(k);
+                            self.syncPhViewport();
+                            return .none;
+                        },
+                        .char => |c| switch (c) {
+                            'j', 'k', 'g', 'G' => {
+                                if (self.ph_loading) return .none;
+                                self.ph_table.handleKey(k);
+                                self.syncPhViewport();
                                 return .none;
                             },
                             else => {},
@@ -398,6 +545,88 @@ const Model = struct {
         return try std.fmt.allocPrint(allocator, "{s}...", .{text[0 .. width - 3]});
     }
 
+    fn fetchProductHuntTask(arg: FetchArg) ?Msg {
+        const token = arg.ph_token orelse return .producthunt_failed;
+        const posts = ph.fetch(arg.allocator, arg.io, token) catch return .producthunt_failed;
+        return .{ .producthunt_loaded = posts };
+    }
+
+    fn handleProductHuntResult(self: *Model, msg: Msg) void {
+        switch (msg) {
+            .producthunt_loaded => |posts| {
+                self.ph_posts.deinit();
+                self.ph_posts = posts;
+                self.ph_loading = false;
+                self.ph_table.cursor_row = 0;
+                self.ph_table.y_offset = 0;
+                self.ph_viewport.scrollTo(0, 0);
+            },
+            .producthunt_failed => {
+                if (!self.ph_loading) return;
+                self.ph_posts.deinit();
+                self.ph_posts = ph.PostList.init(std.heap.page_allocator);
+                self.ph_loading = false;
+                self.ph_table.cursor_row = 0;
+                self.ph_table.y_offset = 0;
+                self.ph_viewport.scrollTo(0, 0);
+            },
+            else => {},
+        }
+    }
+
+    fn configurePhTable(self: *Model, allocator: std.mem.Allocator, viewport_width: u16) !void {
+        const tagline_width: u16 = 24;
+        const votes_width: u16 = 6;
+        const comments_width: u16 = 8;
+        const table_overhead: u16 = 14;
+        const fixed_width = tagline_width + votes_width + comments_width + table_overhead;
+        const name_width = @min(@as(u16, 80), @max(@as(u16, 16), viewport_width -| fixed_width));
+
+        self.ph_table.setColumnWidth(0, name_width);
+        self.ph_table.setColumnWidth(1, tagline_width);
+        self.ph_table.setColumnWidth(2, votes_width);
+        self.ph_table.setColumnWidth(3, comments_width);
+        self.populatePhTable(allocator, name_width, tagline_width, votes_width, comments_width);
+    }
+
+    fn populatePhTable(self: *Model, allocator: std.mem.Allocator, name_width: usize, tagline_width: usize, votes_width: usize, comments_width: usize) void {
+        self.ph_table.clearRows();
+        for (self.ph_posts.items.items) |post| {
+            self.ph_table.addRow(.{
+                truncateForWidth(allocator, post.name, name_width) catch post.name,
+                truncateForWidth(allocator, post.tagline, tagline_width) catch post.tagline,
+                truncateForWidth(allocator, post.votes, votes_width) catch post.votes,
+                truncateForWidth(allocator, post.comments, comments_width) catch post.comments,
+            }) catch {};
+        }
+    }
+
+    fn openSelectedProductHunt(self: *const Model, ctx: *zz.Context) void {
+        const selected = self.ph_table.selectedRow();
+        if (selected >= self.ph_posts.items.items.len) return;
+
+        var child = std.process.spawn(ctx.io, .{
+            .argv = &.{ "open", self.ph_posts.items.items[selected].url },
+            .stdin = .ignore,
+            .stdout = .ignore,
+            .stderr = .ignore,
+        }) catch return;
+        _ = child.wait(ctx.io) catch {};
+    }
+
+    fn syncPhViewport(self: *Model) void {
+        const selected = self.ph_table.selectedRow();
+        const header_lines: usize = 3;
+        const row_stride: usize = if (self.ph_table.show_row_borders) 2 else 1;
+        const row_line = header_lines + selected * row_stride;
+
+        if (row_line < self.ph_viewport.y_offset) {
+            self.ph_viewport.scrollTo(row_line, 0);
+        } else if (row_line >= self.ph_viewport.y_offset + self.ph_viewport.height) {
+            self.ph_viewport.scrollTo(row_line - self.ph_viewport.height + 1, 0);
+        }
+    }
+
     fn fetchHackerNewsTask(arg: FetchArg) ?Msg {
         const stories = hackernews.fetch(arg.allocator, arg.io) catch return .hackernews_failed;
         return .{ .hackernews_loaded = stories };
@@ -484,6 +713,12 @@ const Model = struct {
         return .{ .arxiv_loaded = papers };
     }
 
+    fn fetchRssTask(arg: FetchArg) ?Msg {
+        const url = arg.rss_url orelse return .rss_failed;
+        const items = rss.fetch(arg.allocator, arg.io, url) catch return .rss_failed;
+        return .{ .rss_loaded = items };
+    }
+
     fn handleArxivResult(self: *Model, msg: Msg) void {
         switch (msg) {
             .arxiv_loaded => |papers| {
@@ -557,6 +792,108 @@ const Model = struct {
             self.arxiv_viewport.scrollTo(row_line, 0);
         } else if (row_line >= self.arxiv_viewport.y_offset + self.arxiv_viewport.height) {
             self.arxiv_viewport.scrollTo(row_line - self.arxiv_viewport.height + 1, 0);
+        }
+    }
+
+    fn handleRssResult(self: *Model, msg: Msg) void {
+        switch (msg) {
+            .rss_loaded => |items| {
+                for (items.items.items) |item| {
+                    self.rss_items.add(item.title, item.link, item.pub_date, item.source) catch {};
+                }
+                const mutable_items: *rss.FeedItemList = @constCast(&items);
+                mutable_items.deinit();
+                self.rss_completed += 1;
+                if (self.rss_completed >= self.rss_feed_count) {
+                    self.sortRssItems();
+                    self.rss_loading = false;
+                    self.rss_table.cursor_row = 0;
+                    self.rss_table.y_offset = 0;
+                    self.rss_viewport.scrollTo(0, 0);
+                }
+            },
+            .rss_failed => {
+                self.rss_completed += 1;
+                if (self.rss_completed >= self.rss_feed_count) {
+                    if (self.rss_items.items.items.len == 0) {
+                        self.rss_items = fallbackRss(std.heap.page_allocator) catch rss.FeedItemList.init(std.heap.page_allocator);
+                    } else {
+                        self.sortRssItems();
+                    }
+                    self.rss_loading = false;
+                    self.rss_table.cursor_row = 0;
+                    self.rss_table.y_offset = 0;
+                    self.rss_viewport.scrollTo(0, 0);
+                }
+            },
+            else => {},
+        }
+    }
+
+    fn sortRssItems(self: *Model) void {
+        var i: usize = 1;
+        while (i < self.rss_items.items.items.len) : (i += 1) {
+            var j = i;
+            while (j > 0 and lessByDate(self.rss_items.items.items[j - 1], self.rss_items.items.items[j])) {
+                const tmp = self.rss_items.items.items[j];
+                self.rss_items.items.items[j] = self.rss_items.items.items[j - 1];
+                self.rss_items.items.items[j - 1] = tmp;
+                j -= 1;
+            }
+        }
+    }
+
+    fn lessByDate(a: rss.FeedItem, b: rss.FeedItem) bool {
+        return std.mem.order(u8, a.pub_date, b.pub_date) == .lt;
+    }
+
+    fn configureRssTable(self: *Model, allocator: std.mem.Allocator, viewport_width: u16) !void {
+        const source_width: u16 = 20;
+        const date_width: u16 = 10;
+        const table_overhead: u16 = 10;
+        const fixed_width = source_width + date_width + table_overhead;
+        const title_width = @min(@as(u16, 120), @max(@as(u16, 24), viewport_width -| fixed_width));
+
+        self.rss_table.setColumnWidth(0, title_width);
+        self.rss_table.setColumnWidth(1, source_width);
+        self.rss_table.setColumnWidth(2, date_width);
+        self.populateRssTable(allocator, title_width, source_width, date_width);
+    }
+
+    fn populateRssTable(self: *Model, allocator: std.mem.Allocator, title_width: usize, source_width: usize, date_width: usize) void {
+        self.rss_table.clearRows();
+        for (self.rss_items.items.items) |item| {
+            self.rss_table.addRow(.{
+                truncateForWidth(allocator, item.title, title_width) catch item.title,
+                truncateForWidth(allocator, item.source, source_width) catch item.source,
+                truncateForWidth(allocator, item.pub_date, date_width) catch item.pub_date,
+            }) catch {};
+        }
+    }
+
+    fn openSelectedRss(self: *const Model, ctx: *zz.Context) void {
+        const selected = self.rss_table.selectedRow();
+        if (selected >= self.rss_items.items.items.len) return;
+
+        var child = std.process.spawn(ctx.io, .{
+            .argv = &.{ "open", self.rss_items.items.items[selected].link },
+            .stdin = .ignore,
+            .stdout = .ignore,
+            .stderr = .ignore,
+        }) catch return;
+        _ = child.wait(ctx.io) catch {};
+    }
+
+    fn syncRssViewport(self: *Model) void {
+        const selected = self.rss_table.selectedRow();
+        const header_lines: usize = 3;
+        const row_stride: usize = if (self.rss_table.show_row_borders) 2 else 1;
+        const row_line = header_lines + selected * row_stride;
+
+        if (row_line < self.rss_viewport.y_offset) {
+            self.rss_viewport.scrollTo(row_line, 0);
+        } else if (row_line >= self.rss_viewport.y_offset + self.rss_viewport.height) {
+            self.rss_viewport.scrollTo(row_line - self.rss_viewport.height + 1, 0);
         }
     }
 
@@ -790,6 +1127,43 @@ const Model = struct {
             .inline_style(true);
 
         const title = try title_style.render(ctx.allocator, self.active_tab.name());
+        const mutable_self: *Model = @constCast(self);
+
+        const content_body = if (self.ph_disabled) blk: {
+            var msg_style = zz.Style{};
+            msg_style = msg_style
+                .fg(zz.Color.gray(12))
+                .inline_style(true);
+            const msg = try msg_style.render(ctx.allocator, "Set PRODUCT_HUNT_TOKEN environment variable to enable");
+            break :blk zz.place.place(ctx.allocator, panelWidth(ctx) -| 6, viewportHeight(ctx), .center, .middle, msg) catch msg;
+        } else if (self.ph_loading) blk: {
+            const loading = try self.spinner.viewWithTitle(ctx.allocator, "Loading Product Hunt posts...");
+            break :blk zz.place.place(ctx.allocator, panelWidth(ctx) -| 6, viewportHeight(ctx), .center, .middle, loading) catch loading;
+        } else blk: {
+            const viewport_width = panelWidth(ctx) -| 6;
+            mutable_self.ph_viewport.setSize(viewport_width, viewportHeight(ctx));
+            try mutable_self.configurePhTable(ctx.allocator, viewport_width -| 1);
+            const table_content = try self.ph_table.view(ctx.allocator);
+            try mutable_self.ph_viewport.setContent(table_content);
+            break :blk try mutable_self.ph_viewport.view(ctx.allocator);
+        };
+
+        var help_style = zz.Style{};
+        help_style = help_style
+            .fg(zz.Color.gray(10))
+            .inline_style(true);
+
+        const help_text = if (self.ph_disabled)
+            ""
+        else if (self.ph_loading)
+            "Fetching featured products..."
+        else
+            try std.fmt.allocPrint(
+                ctx.allocator,
+                "j/k Up/Down: select  PgUp/PgDn: page  g/G: ends  Enter: open  {d}/{d}",
+                .{ self.ph_table.selectedRow() + 1, self.ph_table.rows.items.len },
+            );
+        const help = try help_style.render(ctx.allocator, help_text);
 
         var box_style = zz.Style{};
         box_style = box_style
@@ -800,8 +1174,8 @@ const Model = struct {
 
         const content = try std.fmt.allocPrint(
             ctx.allocator,
-            "{s}\n\nProduct Hunt launches will be shown here.",
-            .{title},
+            "{s}\n\n{s}\n\n{s}",
+            .{ title, content_body, help },
         );
 
         return box_style.render(ctx.allocator, content);
@@ -867,6 +1241,33 @@ const Model = struct {
             .inline_style(true);
 
         const title = try title_style.render(ctx.allocator, self.active_tab.name());
+        const mutable_self: *Model = @constCast(self);
+        const content_body = if (self.rss_loading) blk: {
+            const loading = try self.spinner.viewWithTitle(ctx.allocator, "Loading RSS feeds...");
+            break :blk zz.place.place(ctx.allocator, panelWidth(ctx) -| 6, viewportHeight(ctx), .center, .middle, loading) catch loading;
+        } else blk: {
+            const viewport_width = panelWidth(ctx) -| 6;
+            mutable_self.rss_viewport.setSize(viewport_width, viewportHeight(ctx));
+            try mutable_self.configureRssTable(ctx.allocator, viewport_width -| 1);
+            const table_content = try self.rss_table.view(ctx.allocator);
+            try mutable_self.rss_viewport.setContent(table_content);
+            break :blk try mutable_self.rss_viewport.view(ctx.allocator);
+        };
+
+        var help_style = zz.Style{};
+        help_style = help_style
+            .fg(zz.Color.gray(10))
+            .inline_style(true);
+
+        const help_text = if (self.rss_loading)
+            "Fetching RSS feeds..."
+        else
+            try std.fmt.allocPrint(
+                ctx.allocator,
+                "j/k Up/Down: select  PgUp/PgDn: page  g/G: ends  Enter: open  {d}/{d}",
+                .{ self.rss_table.selectedRow() + 1, self.rss_table.rows.items.len },
+            );
+        const help = try help_style.render(ctx.allocator, help_text);
 
         var box_style = zz.Style{};
         box_style = box_style
@@ -877,8 +1278,8 @@ const Model = struct {
 
         const content = try std.fmt.allocPrint(
             ctx.allocator,
-            "{s}\n\nRSS feed items will be shown here.",
-            .{title},
+            "{s}\n\n{s}\n\n{s}",
+            .{ title, content_body, help },
         );
 
         return box_style.render(ctx.allocator, content);
@@ -914,16 +1315,25 @@ const Model = struct {
         self.trending_repos_table.deinit();
         self.trending_repos_viewport.deinit();
         self.trending_repos.deinit();
+        self.ph_table.deinit();
+        self.ph_viewport.deinit();
+        self.ph_posts.deinit();
         self.hn_table.deinit();
         self.hn_viewport.deinit();
         self.hn_stories.deinit();
         self.arxiv_table.deinit();
         self.arxiv_viewport.deinit();
         self.arxiv_papers.deinit();
+        self.rss_table.deinit();
+        self.rss_viewport.deinit();
+        self.rss_items.deinit();
+        self.config.deinit();
     }
 };
 
 pub fn main(init: std.process.Init) !void {
+    product_hunt_token = init.environ_map.get("PRODUCT_HUNT_TOKEN");
+
     var program = zz.Program(Model).initWithOptions(init.gpa, init.io, init.environ_map, .{
         .mouse = true,
         .title = "Carbonara",
