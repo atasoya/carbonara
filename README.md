@@ -22,6 +22,13 @@ cd carbonara
 zig build # and link the binary to your $PATH
 ```
 
+### Homebrew
+
+```sh
+brew tap atasoya/carbonara
+brew install carbonara
+```
+
 ## Configuration
 
 Carbonara reads its configuration from `$HOME/.config/carbonara/config.json`.
