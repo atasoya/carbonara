@@ -2,6 +2,7 @@ const std = @import("std");
 const Writer = std.Io.Writer;
 const zz = @import("zigzag");
 const trending = @import("trending.zig");
+const hackernews = @import("hackernews.zig");
 
 const max_panel_width = 140;
 
@@ -23,6 +24,19 @@ fn fallbackTrendingRepos(allocator: std.mem.Allocator) !trending.RepoList {
     try repos.add("ziglang/zig", "Zig", "40.3k");
 
     return repos;
+}
+
+fn fallbackHackerNews(allocator: std.mem.Allocator) !hackernews.StoryList {
+    var stories = hackernews.StoryList.init(allocator);
+    errdefer stories.deinit();
+
+    try stories.add("My YC app: Dropbox - Throw away your USB drive", "dhouston", "111", "71", "https://news.ycombinator.com/item?id=8863");
+    try stories.add("Show HN: A new kind of database", "example", "89", "45", "https://example.com");
+    try stories.add("Ask HN: What are you working on?", "user123", "120", "60", "https://news.ycombinator.com/item?id=9999");
+    try stories.add("The Future of Computing", "techwriter", "67", "34", "https://example.com/future");
+    try stories.add("Why Functional Programming Matters", "fp_fan", "55", "28", "https://example.com/fp");
+
+    return stories;
 }
 
 const Tab = enum {
@@ -50,6 +64,10 @@ const Model = struct {
     trending_repos_table: zz.Table(3),
     trending_repos_viewport: zz.Viewport,
     trending_loading: bool,
+    hn_stories: hackernews.StoryList,
+    hn_table: zz.Table(4),
+    hn_viewport: zz.Viewport,
+    hn_loading: bool,
     spinner: zz.Spinner,
     runner: zz.AsyncRunner(Msg),
     show_quit_confirm: bool,
@@ -60,6 +78,8 @@ const Model = struct {
         window_size: struct { width: u16, height: u16 },
         trending_loaded: trending.RepoList,
         trending_failed,
+        hackernews_loaded: hackernews.StoryList,
+        hackernews_failed,
     };
 
     const FetchArg = struct {
@@ -78,9 +98,25 @@ const Model = struct {
         self.trending_repos_table.visible_rows = 100;
         self.populateTrendingReposTable(std.heap.page_allocator, 32, 11, 7);
         self.trending_loading = true;
+        self.hn_stories = hackernews.StoryList.init(std.heap.page_allocator);
+        self.hn_table = zz.Table(4).init(std.heap.page_allocator);
+        self.hn_table.setHeaders(.{ "Title", "By", "Score", "Comments" });
+        self.hn_table.focus();
+        self.hn_table.show_row_borders = true;
+        self.hn_table.visible_rows = 100;
+        self.populateHNTable(std.heap.page_allocator, 32, 15, 6, 8);
+        self.hn_loading = true;
+        self.hn_viewport = zz.Viewport.init(std.heap.page_allocator, 67, 14);
+        self.hn_viewport.setWrap(false);
+        self.hn_viewport.setScrollbarChars(".", "#");
+        self.hn_viewport.setScrollbarStyle(
+            (zz.Style{}).fg(.gray(8)).inline_style(true),
+            (zz.Style{}).fg(.cyan).inline_style(true),
+        );
         self.spinner = zz.Spinner.init();
         self.runner = zz.AsyncRunner(Msg).init(std.heap.page_allocator);
         _ = self.runner.spawnWithArg(FetchArg, .{ .allocator = std.heap.page_allocator, .io = ctx.io }, fetchTrendingTask);
+        _ = self.runner.spawnWithArg(FetchArg, .{ .allocator = std.heap.page_allocator, .io = ctx.io }, fetchHackerNewsTask);
         self.trending_repos_viewport = zz.Viewport.init(std.heap.page_allocator, 67, 14);
         self.trending_repos_viewport.setWrap(false);
         self.trending_repos_viewport.setScrollbarChars(".", "#");
@@ -99,13 +135,21 @@ const Model = struct {
                 _ = self.spinner.update(@intCast(ctx.elapsed));
                 const results = self.runner.poll();
                 for (results) |result| {
-                    self.handleTrendingResult(result);
+                    switch (result) {
+                        .trending_loaded, .trending_failed => self.handleTrendingResult(result),
+                        .hackernews_loaded, .hackernews_failed => self.handleHackerNewsResult(result),
+                        else => {},
+                    }
                 }
                 return .none;
             },
             .window_size => return .none,
             .trending_loaded, .trending_failed => {
                 self.handleTrendingResult(msg);
+                return .none;
+            },
+            .hackernews_loaded, .hackernews_failed => {
+                self.handleHackerNewsResult(msg);
                 return .none;
             },
 
@@ -139,6 +183,32 @@ const Model = struct {
                                 if (self.trending_loading) return .none;
                                 self.trending_repos_table.handleKey(k);
                                 self.syncTrendingReposViewport();
+                                return .none;
+                            },
+                            else => {},
+                        },
+                        else => {},
+                    }
+                }
+
+                if (self.active_tab == .hackernews) {
+                    switch (k.key) {
+                        .enter => {
+                            if (self.hn_loading) return .none;
+                            self.openSelectedHackerNews(ctx);
+                            return .none;
+                        },
+                        .up, .down, .page_up, .page_down, .home, .end => {
+                            if (self.hn_loading) return .none;
+                            self.hn_table.handleKey(k);
+                            self.syncHNViewport();
+                            return .none;
+                        },
+                        .char => |c| switch (c) {
+                            'j', 'k', 'g', 'G' => {
+                                if (self.hn_loading) return .none;
+                                self.hn_table.handleKey(k);
+                                self.syncHNViewport();
                                 return .none;
                             },
                             else => {},
@@ -257,8 +327,88 @@ const Model = struct {
     fn truncateForWidth(allocator: std.mem.Allocator, text: []const u8, width: usize) ![]const u8 {
         if (text.len <= width) return text;
         if (width <= 3) return text[0..@min(text.len, width)];
-
         return try std.fmt.allocPrint(allocator, "{s}...", .{text[0 .. width - 3]});
+    }
+
+    fn fetchHackerNewsTask(arg: FetchArg) ?Msg {
+        const stories = hackernews.fetch(arg.allocator, arg.io) catch return .hackernews_failed;
+        return .{ .hackernews_loaded = stories };
+    }
+
+    fn handleHackerNewsResult(self: *Model, msg: Msg) void {
+        switch (msg) {
+            .hackernews_loaded => |stories| {
+                self.hn_stories.deinit();
+                self.hn_stories = stories;
+                self.hn_loading = false;
+                self.hn_table.cursor_row = 0;
+                self.hn_table.y_offset = 0;
+                self.hn_viewport.scrollTo(0, 0);
+            },
+            .hackernews_failed => {
+                if (!self.hn_loading) return;
+                self.hn_stories.deinit();
+                self.hn_stories = fallbackHackerNews(std.heap.page_allocator) catch hackernews.StoryList.init(std.heap.page_allocator);
+                self.hn_loading = false;
+                self.hn_table.cursor_row = 0;
+                self.hn_table.y_offset = 0;
+                self.hn_viewport.scrollTo(0, 0);
+            },
+            else => {},
+        }
+    }
+
+    fn configureHNTable(self: *Model, allocator: std.mem.Allocator, viewport_width: u16) !void {
+        const by_width: u16 = 15;
+        const score_width: u16 = 6;
+        const comments_width: u16 = 8;
+        const table_overhead: u16 = 14;
+        const fixed_width = by_width + score_width + comments_width + table_overhead;
+        const title_width = @min(@as(u16, 120), @max(@as(u16, 24), viewport_width -| fixed_width));
+
+        self.hn_table.setColumnWidth(0, title_width);
+        self.hn_table.setColumnWidth(1, by_width);
+        self.hn_table.setColumnWidth(2, score_width);
+        self.hn_table.setColumnWidth(3, comments_width);
+        self.populateHNTable(allocator, title_width, by_width, score_width, comments_width);
+    }
+
+    fn populateHNTable(self: *Model, allocator: std.mem.Allocator, title_width: usize, by_width: usize, score_width: usize, comments_width: usize) void {
+        self.hn_table.clearRows();
+        for (self.hn_stories.items.items) |story| {
+            self.hn_table.addRow(.{
+                truncateForWidth(allocator, story.title, title_width) catch story.title,
+                truncateForWidth(allocator, story.by, by_width) catch story.by,
+                truncateForWidth(allocator, story.score, score_width) catch story.score,
+                truncateForWidth(allocator, story.comments, comments_width) catch story.comments,
+            }) catch {};
+        }
+    }
+
+    fn openSelectedHackerNews(self: *const Model, ctx: *zz.Context) void {
+        const selected = self.hn_table.selectedRow();
+        if (selected >= self.hn_stories.items.items.len) return;
+
+        var child = std.process.spawn(ctx.io, .{
+            .argv = &.{ "open", self.hn_stories.items.items[selected].url },
+            .stdin = .ignore,
+            .stdout = .ignore,
+            .stderr = .ignore,
+        }) catch return;
+        _ = child.wait(ctx.io) catch {};
+    }
+
+    fn syncHNViewport(self: *Model) void {
+        const selected = self.hn_table.selectedRow();
+        const header_lines: usize = 3;
+        const row_stride: usize = if (self.hn_table.show_row_borders) 2 else 1;
+        const row_line = header_lines + selected * row_stride;
+
+        if (row_line < self.hn_viewport.y_offset) {
+            self.hn_viewport.scrollTo(row_line, 0);
+        } else if (row_line >= self.hn_viewport.y_offset + self.hn_viewport.height) {
+            self.hn_viewport.scrollTo(row_line - self.hn_viewport.height + 1, 0);
+        }
     }
 
     fn openSelectedTrendingRepo(self: *const Model, ctx: *zz.Context) void {
@@ -439,6 +589,33 @@ const Model = struct {
             .inline_style(true);
 
         const title = try title_style.render(ctx.allocator, self.active_tab.name());
+        const mutable_self: *Model = @constCast(self);
+        const content_body = if (self.hn_loading) blk: {
+            const loading = try self.spinner.viewWithTitle(ctx.allocator, "Loading Hacker News stories...");
+            break :blk zz.place.place(ctx.allocator, panelWidth(ctx) -| 6, viewportHeight(ctx), .center, .middle, loading) catch loading;
+        } else blk: {
+            const viewport_width = panelWidth(ctx) -| 6;
+            mutable_self.hn_viewport.setSize(viewport_width, viewportHeight(ctx));
+            try mutable_self.configureHNTable(ctx.allocator, viewport_width -| 1);
+            const table_content = try self.hn_table.view(ctx.allocator);
+            try mutable_self.hn_viewport.setContent(table_content);
+            break :blk try mutable_self.hn_viewport.view(ctx.allocator);
+        };
+
+        var help_style = zz.Style{};
+        help_style = help_style
+            .fg(zz.Color.gray(10))
+            .inline_style(true);
+
+        const help_text = if (self.hn_loading)
+            "Fetching top stories from Hacker News..."
+        else
+            try std.fmt.allocPrint(
+                ctx.allocator,
+                "j/k Up/Down: select  PgUp/PgDn: page  g/G: ends  Enter: open  {d}/{d}",
+                .{ self.hn_table.selectedRow() + 1, self.hn_table.rows.items.len },
+            );
+        const help = try help_style.render(ctx.allocator, help_text);
 
         var box_style = zz.Style{};
         box_style = box_style
@@ -449,8 +626,8 @@ const Model = struct {
 
         const content = try std.fmt.allocPrint(
             ctx.allocator,
-            "{s}\n\nTop Hacker News stories will be shown here.",
-            .{title},
+            "{s}\n\n{s}\n\n{s}",
+            .{ title, content_body, help },
         );
 
         return box_style.render(ctx.allocator, content);
@@ -561,6 +738,9 @@ const Model = struct {
         self.trending_repos_table.deinit();
         self.trending_repos_viewport.deinit();
         self.trending_repos.deinit();
+        self.hn_table.deinit();
+        self.hn_viewport.deinit();
+        self.hn_stories.deinit();
     }
 };
 
