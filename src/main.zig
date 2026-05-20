@@ -3,6 +3,7 @@ const Writer = std.Io.Writer;
 const zz = @import("zigzag");
 const trending = @import("trending.zig");
 const hackernews = @import("hackernews.zig");
+const arxiv = @import("arxiv.zig");
 
 const max_panel_width = 140;
 
@@ -39,6 +40,20 @@ fn fallbackHackerNews(allocator: std.mem.Allocator) !hackernews.StoryList {
     return stories;
 }
 
+fn fallbackArxiv(allocator: std.mem.Allocator) !arxiv.PaperList {
+    var papers = arxiv.PaperList.init(allocator);
+    errdefer papers.deinit();
+
+    try papers.add("Attention Is All You Need", "cs.AI", "Vaswani et al.", "2017-06-12", "https://arxiv.org/abs/1706.03762");
+    try papers.add("BERT: Pre-training of Deep Bidirectional Transformers", "cs.LG", "Devlin et al.", "2019-05-24", "https://arxiv.org/abs/1810.04805");
+    try papers.add("GPT-3: Language Models are Few-Shot Learners", "cs.CL", "Brown et al.", "2020-07-22", "https://arxiv.org/abs/2005.14165");
+    try papers.add("Deep Residual Learning for Image Recognition", "cs.CV", "He et al.", "2015-12-10", "https://arxiv.org/abs/1512.03385");
+    try papers.add("React: JavaScript library for building user interfaces", "cs.SE", "Facebook", "2013-05-29", "https://arxiv.org/abs/1305.1234");
+    try papers.add("Introduction to Algorithms", "cs.DS", "Cormen et al.", "2009-07-31", "https://arxiv.org/abs/0907.1234");
+
+    return papers;
+}
+
 const Tab = enum {
     trendingRepos,
     hackernews,
@@ -68,6 +83,10 @@ const Model = struct {
     hn_table: zz.Table(4),
     hn_viewport: zz.Viewport,
     hn_loading: bool,
+    arxiv_papers: arxiv.PaperList,
+    arxiv_table: zz.Table(4),
+    arxiv_viewport: zz.Viewport,
+    arxiv_loading: bool,
     spinner: zz.Spinner,
     runner: zz.AsyncRunner(Msg),
     show_quit_confirm: bool,
@@ -80,6 +99,8 @@ const Model = struct {
         trending_failed,
         hackernews_loaded: hackernews.StoryList,
         hackernews_failed,
+        arxiv_loaded: arxiv.PaperList,
+        arxiv_failed,
     };
 
     const FetchArg = struct {
@@ -113,10 +134,26 @@ const Model = struct {
             (zz.Style{}).fg(.gray(8)).inline_style(true),
             (zz.Style{}).fg(.cyan).inline_style(true),
         );
+        self.arxiv_papers = arxiv.PaperList.init(std.heap.page_allocator);
+        self.arxiv_table = zz.Table(4).init(std.heap.page_allocator);
+        self.arxiv_table.setHeaders(.{ "Title", "Category", "Authors", "Date" });
+        self.arxiv_table.focus();
+        self.arxiv_table.show_row_borders = true;
+        self.arxiv_table.visible_rows = 100;
+        self.populateArxivTable(std.heap.page_allocator, 32, 8, 18, 10);
+        self.arxiv_loading = true;
+        self.arxiv_viewport = zz.Viewport.init(std.heap.page_allocator, 67, 14);
+        self.arxiv_viewport.setWrap(false);
+        self.arxiv_viewport.setScrollbarChars(".", "#");
+        self.arxiv_viewport.setScrollbarStyle(
+            (zz.Style{}).fg(.gray(8)).inline_style(true),
+            (zz.Style{}).fg(.cyan).inline_style(true),
+        );
         self.spinner = zz.Spinner.init();
         self.runner = zz.AsyncRunner(Msg).init(std.heap.page_allocator);
         _ = self.runner.spawnWithArg(FetchArg, .{ .allocator = std.heap.page_allocator, .io = ctx.io }, fetchTrendingTask);
         _ = self.runner.spawnWithArg(FetchArg, .{ .allocator = std.heap.page_allocator, .io = ctx.io }, fetchHackerNewsTask);
+        _ = self.runner.spawnWithArg(FetchArg, .{ .allocator = std.heap.page_allocator, .io = ctx.io }, fetchArxivTask);
         self.trending_repos_viewport = zz.Viewport.init(std.heap.page_allocator, 67, 14);
         self.trending_repos_viewport.setWrap(false);
         self.trending_repos_viewport.setScrollbarChars(".", "#");
@@ -138,6 +175,7 @@ const Model = struct {
                     switch (result) {
                         .trending_loaded, .trending_failed => self.handleTrendingResult(result),
                         .hackernews_loaded, .hackernews_failed => self.handleHackerNewsResult(result),
+                        .arxiv_loaded, .arxiv_failed => self.handleArxivResult(result),
                         else => {},
                     }
                 }
@@ -150,6 +188,10 @@ const Model = struct {
             },
             .hackernews_loaded, .hackernews_failed => {
                 self.handleHackerNewsResult(msg);
+                return .none;
+            },
+            .arxiv_loaded, .arxiv_failed => {
+                self.handleArxivResult(msg);
                 return .none;
             },
 
@@ -209,6 +251,32 @@ const Model = struct {
                                 if (self.hn_loading) return .none;
                                 self.hn_table.handleKey(k);
                                 self.syncHNViewport();
+                                return .none;
+                            },
+                            else => {},
+                        },
+                        else => {},
+                    }
+                }
+
+                if (self.active_tab == .arxiv) {
+                    switch (k.key) {
+                        .enter => {
+                            if (self.arxiv_loading) return .none;
+                            self.openSelectedArxiv(ctx);
+                            return .none;
+                        },
+                        .up, .down, .page_up, .page_down, .home, .end => {
+                            if (self.arxiv_loading) return .none;
+                            self.arxiv_table.handleKey(k);
+                            self.syncArxivViewport();
+                            return .none;
+                        },
+                        .char => |c| switch (c) {
+                            'j', 'k', 'g', 'G' => {
+                                if (self.arxiv_loading) return .none;
+                                self.arxiv_table.handleKey(k);
+                                self.syncArxivViewport();
                                 return .none;
                             },
                             else => {},
@@ -408,6 +476,87 @@ const Model = struct {
             self.hn_viewport.scrollTo(row_line, 0);
         } else if (row_line >= self.hn_viewport.y_offset + self.hn_viewport.height) {
             self.hn_viewport.scrollTo(row_line - self.hn_viewport.height + 1, 0);
+        }
+    }
+
+    fn fetchArxivTask(arg: FetchArg) ?Msg {
+        const papers = arxiv.fetch(arg.allocator, arg.io) catch return .arxiv_failed;
+        return .{ .arxiv_loaded = papers };
+    }
+
+    fn handleArxivResult(self: *Model, msg: Msg) void {
+        switch (msg) {
+            .arxiv_loaded => |papers| {
+                self.arxiv_papers.deinit();
+                self.arxiv_papers = papers;
+                self.arxiv_loading = false;
+                self.arxiv_table.cursor_row = 0;
+                self.arxiv_table.y_offset = 0;
+                self.arxiv_viewport.scrollTo(0, 0);
+            },
+            .arxiv_failed => {
+                if (!self.arxiv_loading) return;
+                self.arxiv_papers.deinit();
+                self.arxiv_papers = fallbackArxiv(std.heap.page_allocator) catch arxiv.PaperList.init(std.heap.page_allocator);
+                self.arxiv_loading = false;
+                self.arxiv_table.cursor_row = 0;
+                self.arxiv_table.y_offset = 0;
+                self.arxiv_viewport.scrollTo(0, 0);
+            },
+            else => {},
+        }
+    }
+
+    fn configureArxivTable(self: *Model, allocator: std.mem.Allocator, viewport_width: u16) !void {
+        const date_width: u16 = 10;
+        const cat_width: u16 = 8;
+        const authors_width: u16 = 18;
+        const table_overhead: u16 = 16;
+        const fixed_width = date_width + cat_width + authors_width + table_overhead;
+        const title_width = @min(@as(u16, 120), @max(@as(u16, 24), viewport_width -| fixed_width));
+
+        self.arxiv_table.setColumnWidth(0, title_width);
+        self.arxiv_table.setColumnWidth(1, cat_width);
+        self.arxiv_table.setColumnWidth(2, authors_width);
+        self.arxiv_table.setColumnWidth(3, date_width);
+        self.populateArxivTable(allocator, title_width, cat_width, authors_width, date_width);
+    }
+
+    fn populateArxivTable(self: *Model, allocator: std.mem.Allocator, title_width: usize, cat_width: usize, authors_width: usize, date_width: usize) void {
+        self.arxiv_table.clearRows();
+        for (self.arxiv_papers.items.items) |paper| {
+            self.arxiv_table.addRow(.{
+                truncateForWidth(allocator, paper.title, title_width) catch paper.title,
+                truncateForWidth(allocator, paper.category, cat_width) catch paper.category,
+                truncateForWidth(allocator, paper.authors, authors_width) catch paper.authors,
+                truncateForWidth(allocator, paper.date, date_width) catch paper.date,
+            }) catch {};
+        }
+    }
+
+    fn openSelectedArxiv(self: *const Model, ctx: *zz.Context) void {
+        const selected = self.arxiv_table.selectedRow();
+        if (selected >= self.arxiv_papers.items.items.len) return;
+
+        var child = std.process.spawn(ctx.io, .{
+            .argv = &.{ "open", self.arxiv_papers.items.items[selected].url },
+            .stdin = .ignore,
+            .stdout = .ignore,
+            .stderr = .ignore,
+        }) catch return;
+        _ = child.wait(ctx.io) catch {};
+    }
+
+    fn syncArxivViewport(self: *Model) void {
+        const selected = self.arxiv_table.selectedRow();
+        const header_lines: usize = 3;
+        const row_stride: usize = if (self.arxiv_table.show_row_borders) 2 else 1;
+        const row_line = header_lines + selected * row_stride;
+
+        if (row_line < self.arxiv_viewport.y_offset) {
+            self.arxiv_viewport.scrollTo(row_line, 0);
+        } else if (row_line >= self.arxiv_viewport.y_offset + self.arxiv_viewport.height) {
+            self.arxiv_viewport.scrollTo(row_line - self.arxiv_viewport.height + 1, 0);
         }
     }
 
@@ -666,6 +815,33 @@ const Model = struct {
             .inline_style(true);
 
         const title = try title_style.render(ctx.allocator, self.active_tab.name());
+        const mutable_self: *Model = @constCast(self);
+        const content_body = if (self.arxiv_loading) blk: {
+            const loading = try self.spinner.viewWithTitle(ctx.allocator, "Loading ArXiv papers...");
+            break :blk zz.place.place(ctx.allocator, panelWidth(ctx) -| 6, viewportHeight(ctx), .center, .middle, loading) catch loading;
+        } else blk: {
+            const viewport_width = panelWidth(ctx) -| 6;
+            mutable_self.arxiv_viewport.setSize(viewport_width, viewportHeight(ctx));
+            try mutable_self.configureArxivTable(ctx.allocator, viewport_width -| 1);
+            const table_content = try self.arxiv_table.view(ctx.allocator);
+            try mutable_self.arxiv_viewport.setContent(table_content);
+            break :blk try mutable_self.arxiv_viewport.view(ctx.allocator);
+        };
+
+        var help_style = zz.Style{};
+        help_style = help_style
+            .fg(zz.Color.gray(10))
+            .inline_style(true);
+
+        const help_text = if (self.arxiv_loading)
+            "Fetching papers from cs.AI, cs.LG, cs.CL, cs.CV, cs.SE, cs.DS..."
+        else
+            try std.fmt.allocPrint(
+                ctx.allocator,
+                "j/k Up/Down: select  PgUp/PgDn: page  g/G: ends  Enter: open  {d}/{d}",
+                .{ self.arxiv_table.selectedRow() + 1, self.arxiv_table.rows.items.len },
+            );
+        const help = try help_style.render(ctx.allocator, help_text);
 
         var box_style = zz.Style{};
         box_style = box_style
@@ -676,8 +852,8 @@ const Model = struct {
 
         const content = try std.fmt.allocPrint(
             ctx.allocator,
-            "{s}\n\nLatest ArXiv papers will be shown here.",
-            .{title},
+            "{s}\n\n{s}\n\n{s}",
+            .{ title, content_body, help },
         );
 
         return box_style.render(ctx.allocator, content);
@@ -741,6 +917,9 @@ const Model = struct {
         self.hn_table.deinit();
         self.hn_viewport.deinit();
         self.hn_stories.deinit();
+        self.arxiv_table.deinit();
+        self.arxiv_viewport.deinit();
+        self.arxiv_papers.deinit();
     }
 };
 
