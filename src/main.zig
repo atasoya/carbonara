@@ -16,18 +16,18 @@ fn fallbackTrendingRepos(allocator: std.mem.Allocator) !trending.RepoList {
     var repos = trending.RepoList.init(allocator);
     errdefer repos.deinit();
 
-    try repos.add("ghostty-org/ghostty", "Zig", "34.8k");
-    try repos.add("sharkdp/fd", "Rust", "34.1k");
-    try repos.add("astral-sh/uv", "Rust", "55.3k");
-    try repos.add("zed-industries/zed", "Rust", "58.7k");
-    try repos.add("oven-sh/bun", "Zig", "77.2k");
-    try repos.add("helix-editor/helix", "Rust", "39.6k");
-    try repos.add("charmbracelet/bubbletea", "Go", "31.4k");
-    try repos.add("tursodatabase/turso", "Rust", "12.9k");
-    try repos.add("vercel/next.js", "TypeScript", "128k");
-    try repos.add("sveltejs/svelte", "TypeScript", "81.5k");
-    try repos.add("neovim/neovim", "Vim Script", "88.2k");
-    try repos.add("ziglang/zig", "Zig", "40.3k");
+    try repos.add("ghostty-org/ghostty", "A fast, feature-rich terminal emulator", "Zig", "34.8k");
+    try repos.add("sharkdp/fd", "A simple, fast and user-friendly alternative to find", "Rust", "34.1k");
+    try repos.add("astral-sh/uv", "An extremely fast Python package manager", "Rust", "55.3k");
+    try repos.add("zed-industries/zed", "Code at the speed of thought", "Rust", "58.7k");
+    try repos.add("oven-sh/bun", "Incredibly fast JavaScript runtime", "Zig", "77.2k");
+    try repos.add("helix-editor/helix", "A post-modern modal text editor", "Rust", "39.6k");
+    try repos.add("charmbracelet/bubbletea", "A powerful little TUI framework", "Go", "31.4k");
+    try repos.add("tursodatabase/turso", "SQLite for production", "Rust", "12.9k");
+    try repos.add("vercel/next.js", "The React framework for production", "TypeScript", "128k");
+    try repos.add("sveltejs/svelte", "Cybernetically enhanced web apps", "TypeScript", "81.5k");
+    try repos.add("neovim/neovim", "Hyperextensible Vim-based text editor", "Vim Script", "88.2k");
+    try repos.add("ziglang/zig", "General-purpose programming language", "Zig", "40.3k");
 
     return repos;
 }
@@ -94,7 +94,7 @@ const Model = struct {
     active_tab: Tab,
     confirm: zz.Confirm,
     trending_repos: trending.RepoList,
-    trending_repos_table: zz.Table(3),
+    trending_repos_table: zz.Table(4),
     trending_repos_viewport: zz.Viewport,
     trending_loading: bool,
     ph_posts: ph.PostList,
@@ -148,12 +148,12 @@ const Model = struct {
         self.active_tab = .trendingRepos;
         self.confirm = zz.Confirm.init("Are you sure you want to quit?");
         self.trending_repos = trending.RepoList.init(std.heap.page_allocator);
-        self.trending_repos_table = zz.Table(3).init(std.heap.page_allocator);
-        self.trending_repos_table.setHeaders(.{ "Repository", "Language", "Stars" });
+        self.trending_repos_table = zz.Table(4).init(std.heap.page_allocator);
+        self.trending_repos_table.setHeaders(.{ "Repository", "Language", "Stars", "Description" });
         self.trending_repos_table.focus();
         self.trending_repos_table.show_row_borders = true;
         self.trending_repos_table.visible_rows = 100;
-        self.populateTrendingReposTable(std.heap.page_allocator, 32, 11, 7);
+        self.populateTrendingReposTable(std.heap.page_allocator, 32, 12, 7, 28);
         self.trending_loading = true;
         self.ph_posts = ph.PostList.init(std.heap.page_allocator);
         self.ph_table = zz.Table(4).init(std.heap.page_allocator);
@@ -516,25 +516,28 @@ const Model = struct {
     }
 
     fn configureTrendingReposTable(self: *Model, allocator: std.mem.Allocator, viewport_width: u16) !void {
+        const repo_width: u16 = 32;
         const lang_width: u16 = 12;
         const stars_width: u16 = 7;
-        const table_overhead: u16 = 10;
-        const fixed_width = lang_width + stars_width + table_overhead;
-        const repo_width = @min(@as(u16, 120), @max(@as(u16, 24), viewport_width -| fixed_width));
+        const table_overhead: u16 = 13;
+        const fixed_width = repo_width + lang_width + stars_width + table_overhead;
+        const desc_width = viewport_width -| fixed_width;
 
         self.trending_repos_table.setColumnWidth(0, repo_width);
         self.trending_repos_table.setColumnWidth(1, lang_width);
         self.trending_repos_table.setColumnWidth(2, stars_width);
-        self.populateTrendingReposTable(allocator, repo_width, lang_width, stars_width);
+        self.trending_repos_table.setColumnWidth(3, desc_width);
+        self.populateTrendingReposTable(allocator, repo_width, lang_width, stars_width, desc_width);
     }
 
-    fn populateTrendingReposTable(self: *Model, allocator: std.mem.Allocator, repo_width: usize, lang_width: usize, stars_width: usize) void {
+    fn populateTrendingReposTable(self: *Model, allocator: std.mem.Allocator, repo_width: usize, lang_width: usize, stars_width: usize, desc_width: usize) void {
         self.trending_repos_table.clearRows();
         for (self.trending_repos.items.items) |repo| {
             self.trending_repos_table.addRow(.{
                 truncateForWidth(allocator, repo.name, repo_width) catch repo.name,
                 truncateForWidth(allocator, repo.language, lang_width) catch repo.language,
                 truncateForWidth(allocator, repo.stars, stars_width) catch repo.stars,
+                truncateForWidth(allocator, repo.description, desc_width) catch repo.description,
             }) catch {};
         }
     }

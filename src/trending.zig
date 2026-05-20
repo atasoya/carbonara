@@ -4,6 +4,7 @@ const endpoint = "https://api.ossinsight.io/v1/trends/repos/?period=past_24_hour
 
 pub const Repo = struct {
     name: []const u8,
+    description: []const u8,
     language: []const u8,
     stars: []const u8,
     url: []const u8,
@@ -23,6 +24,7 @@ pub const RepoList = struct {
     pub fn deinit(self: *RepoList) void {
         for (self.items.items) |repo| {
             self.allocator.free(repo.name);
+            self.allocator.free(repo.description);
             self.allocator.free(repo.language);
             self.allocator.free(repo.stars);
             self.allocator.free(repo.url);
@@ -30,9 +32,12 @@ pub const RepoList = struct {
         self.items.deinit();
     }
 
-    pub fn add(self: *RepoList, name: []const u8, language: []const u8, stars: []const u8) !void {
+    pub fn add(self: *RepoList, name: []const u8, description: []const u8, language: []const u8, stars: []const u8) !void {
         const owned_name = try self.allocator.dupe(u8, name);
         errdefer self.allocator.free(owned_name);
+
+        const owned_desc = try self.allocator.dupe(u8, description);
+        errdefer self.allocator.free(owned_desc);
 
         const owned_language = try self.allocator.dupe(u8, if (language.len == 0) "Unknown" else language);
         errdefer self.allocator.free(owned_language);
@@ -45,6 +50,7 @@ pub const RepoList = struct {
 
         try self.items.append(.{
             .name = owned_name,
+            .description = owned_desc,
             .language = owned_language,
             .stars = owned_stars,
             .url = owned_url,
@@ -86,13 +92,15 @@ pub fn fetch(allocator: std.mem.Allocator, io: std.Io) !RepoList {
     const data = root.get("data") orelse return error.InvalidResponse;
     const rows_value = data.object.get("rows") orelse return error.InvalidResponse;
 
-    for (rows_value.array.items) |row_value| {
+    const max_items = @min(rows_value.array.items.len, 20);
+    for (rows_value.array.items[0..max_items]) |row_value| {
         const row = row_value.object;
         const name = valueString(row.get("repo_name")) orelse continue;
+        const description = valueString(row.get("description")) orelse "";
         const language = valueString(row.get("primary_language")) orelse "Unknown";
         const stars = valueString(row.get("stars")) orelse "0";
 
-        try repos.add(name, language, stars);
+        try repos.add(name, description, language, stars);
     }
 
     return repos;
