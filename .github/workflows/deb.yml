@@ -1,0 +1,62 @@
+name: Build Debian Package
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-deb:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Build app
+        run: zig build -Doptimize=ReleaseSafe
+
+      - name: Create Debian package
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          APP_NAME="carbonara"
+          ARCH="amd64"
+          PACKAGE_DIR="${APP_NAME}_${VERSION}_${ARCH}"
+
+          mkdir -p "$PACKAGE_DIR/usr/bin"
+          mkdir -p "$PACKAGE_DIR/DEBIAN"
+
+          cp zig-out/bin/carbonara "$PACKAGE_DIR/usr/bin/carbonara"
+          chmod +x "$PACKAGE_DIR/usr/bin/carbonara"
+
+          cat > "$PACKAGE_DIR/DEBIAN/control" <<EOF
+          Package: carbonara
+          Version: ${VERSION}
+          Section: utils
+          Priority: optional
+          Architecture: amd64
+          Maintainer: Ata Atasoy <ataatasoy2013@gmail.com>
+          Description: Terminal dashboard for daily tech news
+           Carbonara is a TUI app for following GitHub, Hacker News,
+           Product Hunt, arXiv, and RSS feeds.
+          EOF
+
+          dpkg-deb --build "$PACKAGE_DIR"
+
+          # Stable name for curl installer
+          cp "${PACKAGE_DIR}.deb" "carbonara_amd64.deb"
+
+      - name: Upload .deb to GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            carbonara_*.deb
