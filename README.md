@@ -29,6 +29,12 @@ brew tap atasoya/carbonara
 brew install carbonara
 ```
 
+### Bash Installer
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/atasoya/carbonara/main/install.sh | sh
+```
+
 ## Configuration
 
 Carbonara reads its configuration from `$HOME/.config/carbonara/config.json`.
