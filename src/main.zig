@@ -120,6 +120,9 @@ const Model = struct {
     spinner: zz.Spinner,
     runner: zz.AsyncRunner(Msg),
     show_quit_confirm: bool,
+    detail_modal: zz.Modal,
+    detail_modal_body: ?[]const u8,
+    detail_modal_url: ?[]const u8,
 
     pub const Msg = union(enum) {
         key: zz.KeyEvent,
@@ -219,6 +222,9 @@ const Model = struct {
         );
         self.spinner = zz.Spinner.init();
         self.runner = zz.AsyncRunner(Msg).init(std.heap.page_allocator);
+        self.detail_modal = zz.Modal.init();
+        self.detail_modal_body = null;
+        self.detail_modal_url = null;
         _ = self.runner.spawnWithArg(FetchArg, .{ .allocator = std.heap.page_allocator, .io = ctx.io }, fetchTrendingTask);
         _ = self.runner.spawnWithArg(FetchArg, .{ .allocator = std.heap.page_allocator, .io = ctx.io }, fetchHackerNewsTask);
         _ = self.runner.spawnWithArg(FetchArg, .{ .allocator = std.heap.page_allocator, .io = ctx.io }, fetchArxivTask);
@@ -290,6 +296,19 @@ const Model = struct {
             },
 
             .key => |k| {
+                if (self.detail_modal.isVisible()) {
+                    self.detail_modal.handleKey(k);
+                    if (self.detail_modal.getResult()) |res| {
+                        switch (res) {
+                            .button_pressed => {
+                                if (self.detail_modal_url) |url| openUrl(ctx, url);
+                            },
+                            .dismissed => {},
+                        }
+                    }
+                    return .none;
+                }
+
                 if (self.show_quit_confirm) {
                     self.confirm.handleKey(k);
 
@@ -315,6 +334,11 @@ const Model = struct {
                             return .none;
                         },
                         .char => |c| switch (c) {
+                            'i' => {
+                                if (self.trending_loading) return .none;
+                                _ = self.showSelectedTrendingRepoDetails(ctx);
+                                return .none;
+                            },
                             'j', 'k', 'g', 'G' => {
                                 if (self.trending_loading) return .none;
                                 self.trending_repos_table.handleKey(k);
@@ -341,6 +365,11 @@ const Model = struct {
                             return .none;
                         },
                         .char => |c| switch (c) {
+                            'i' => {
+                                if (self.hn_loading) return .none;
+                                _ = self.showSelectedHackerNewsDetails(ctx);
+                                return .none;
+                            },
                             'j', 'k', 'g', 'G' => {
                                 if (self.hn_loading) return .none;
                                 self.hn_table.handleKey(k);
@@ -367,6 +396,11 @@ const Model = struct {
                             return .none;
                         },
                         .char => |c| switch (c) {
+                            'i' => {
+                                if (self.arxiv_loading) return .none;
+                                _ = self.showSelectedArxivDetails(ctx);
+                                return .none;
+                            },
                             'j', 'k', 'g', 'G' => {
                                 if (self.arxiv_loading) return .none;
                                 self.arxiv_table.handleKey(k);
@@ -393,6 +427,11 @@ const Model = struct {
                             return .none;
                         },
                         .char => |c| switch (c) {
+                            'i' => {
+                                if (self.rss_loading) return .none;
+                                _ = self.showSelectedRssDetails(ctx);
+                                return .none;
+                            },
                             'j', 'k', 'g', 'G' => {
                                 if (self.rss_loading) return .none;
                                 self.rss_table.handleKey(k);
@@ -420,6 +459,11 @@ const Model = struct {
                                 return .none;
                             },
                             .char => |c| switch (c) {
+                                'i' => {
+                                    if (self.ph_loading) return .none;
+                                    _ = self.showSelectedProductHuntDetails(ctx);
+                                    return .none;
+                                },
                                 'j', 'k', 'g', 'G' => {
                                     if (self.ph_loading) return .none;
                                     self.ph_table.handleKey(k);
@@ -549,6 +593,79 @@ const Model = struct {
         return try std.fmt.allocPrint(allocator, "{s}...", .{text[0 .. width - 3]});
     }
 
+    fn isTruncated(text: []const u8, width: usize) bool {
+        return text.len > width;
+    }
+
+    fn openUrl(ctx: *zz.Context, url: []const u8) void {
+        var child = std.process.spawn(ctx.io, .{
+            .argv = &.{ "open", url },
+            .stdin = .ignore,
+            .stdout = .ignore,
+            .stderr = .ignore,
+        }) catch return;
+        _ = child.wait(ctx.io) catch {};
+    }
+
+    fn detailModalBodyWidth(ctx: *const zz.Context) usize {
+        const modal_width = @max(@as(usize, 20), (@as(usize, ctx.width) * 8) / 10);
+        return @max(@as(usize, 14), modal_width -| 6);
+    }
+
+    fn wrapText(allocator: std.mem.Allocator, text: []const u8, width: usize) ![]const u8 {
+        var result: Writer.Allocating = .init(allocator);
+        const writer = &result.writer;
+        var line_iter = std.mem.splitScalar(u8, text, '\n');
+        var first_output_line = true;
+
+        while (line_iter.next()) |line| {
+            if (line.len == 0) {
+                if (!first_output_line) try writer.writeByte('\n');
+                first_output_line = false;
+                continue;
+            }
+
+            var remaining = line;
+            while (remaining.len > width) {
+                var split_at = width;
+                var i: usize = width;
+                while (i > 0) : (i -= 1) {
+                    if (remaining[i - 1] == ' ') {
+                        split_at = i - 1;
+                        break;
+                    }
+                }
+                if (split_at == 0) split_at = width;
+
+                if (!first_output_line) try writer.writeByte('\n');
+                try writer.writeAll(remaining[0..split_at]);
+                first_output_line = false;
+
+                remaining = std.mem.trim(u8, remaining[split_at..], " ");
+            }
+
+            if (!first_output_line) try writer.writeByte('\n');
+            try writer.writeAll(remaining);
+            first_output_line = false;
+        }
+
+        return result.toOwnedSlice();
+    }
+
+    fn showDetailModal(self: *Model, ctx: *const zz.Context, title: []const u8, body: []const u8, url: []const u8) void {
+        const wrapped_body = wrapText(std.heap.page_allocator, body, detailModalBodyWidth(ctx)) catch body;
+        if (wrapped_body.ptr != body.ptr) std.heap.page_allocator.free(body);
+        if (self.detail_modal_body) |old_body| std.heap.page_allocator.free(old_body);
+        self.detail_modal_body = wrapped_body;
+        self.detail_modal_url = url;
+        self.detail_modal = zz.Modal.info(title, wrapped_body);
+        self.detail_modal.width = .{ .percent = 0.8 };
+        self.detail_modal.height = .auto;
+        self.detail_modal.footer = "Enter opens link, Escape closes";
+        self.detail_modal.backdrop = zz.Modal.Backdrop.clear;
+        self.detail_modal.show();
+    }
+
     fn fetchProductHuntTask(arg: FetchArg) ?Msg {
         const token = arg.ph_token orelse return .producthunt_failed;
         const posts = ph.fetch(arg.allocator, arg.io, token) catch return .producthunt_failed;
@@ -609,13 +726,22 @@ const Model = struct {
         const selected = self.ph_table.selectedRow();
         if (selected >= self.ph_posts.items.items.len) return;
 
-        var child = std.process.spawn(ctx.io, .{
-            .argv = &.{ "open", self.ph_posts.items.items[selected].url },
-            .stdin = .ignore,
-            .stdout = .ignore,
-            .stderr = .ignore,
-        }) catch return;
-        _ = child.wait(ctx.io) catch {};
+        openUrl(ctx, self.ph_posts.items.items[selected].url);
+    }
+
+    fn showSelectedProductHuntDetails(self: *Model, ctx: *zz.Context) bool {
+        const selected = self.ph_table.selectedRow();
+        if (selected >= self.ph_posts.items.items.len) return false;
+
+        const post = self.ph_posts.items.items[selected];
+
+        const body = std.fmt.allocPrint(
+            std.heap.page_allocator,
+            "Name: {s}\nTagline: {s}\nVotes: {s}\nComments: {s}\nURL: {s}",
+            .{ post.name, post.tagline, post.votes, post.comments, post.url },
+        ) catch return false;
+        self.showDetailModal(ctx, "Product Hunt", body, post.url);
+        return true;
     }
 
     fn syncPhViewport(self: *Model) void {
@@ -690,13 +816,22 @@ const Model = struct {
         const selected = self.hn_table.selectedRow();
         if (selected >= self.hn_stories.items.items.len) return;
 
-        var child = std.process.spawn(ctx.io, .{
-            .argv = &.{ "open", self.hn_stories.items.items[selected].url },
-            .stdin = .ignore,
-            .stdout = .ignore,
-            .stderr = .ignore,
-        }) catch return;
-        _ = child.wait(ctx.io) catch {};
+        openUrl(ctx, self.hn_stories.items.items[selected].url);
+    }
+
+    fn showSelectedHackerNewsDetails(self: *Model, ctx: *zz.Context) bool {
+        const selected = self.hn_table.selectedRow();
+        if (selected >= self.hn_stories.items.items.len) return false;
+
+        const story = self.hn_stories.items.items[selected];
+
+        const body = std.fmt.allocPrint(
+            std.heap.page_allocator,
+            "Title: {s}\nBy: {s}\nScore: {s}\nComments: {s}\nURL: {s}",
+            .{ story.title, story.by, story.score, story.comments, story.url },
+        ) catch return false;
+        self.showDetailModal(ctx, "Hacker News", body, story.url);
+        return true;
     }
 
     fn syncHNViewport(self: *Model) void {
@@ -777,13 +912,22 @@ const Model = struct {
         const selected = self.arxiv_table.selectedRow();
         if (selected >= self.arxiv_papers.items.items.len) return;
 
-        var child = std.process.spawn(ctx.io, .{
-            .argv = &.{ "open", self.arxiv_papers.items.items[selected].url },
-            .stdin = .ignore,
-            .stdout = .ignore,
-            .stderr = .ignore,
-        }) catch return;
-        _ = child.wait(ctx.io) catch {};
+        openUrl(ctx, self.arxiv_papers.items.items[selected].url);
+    }
+
+    fn showSelectedArxivDetails(self: *Model, ctx: *zz.Context) bool {
+        const selected = self.arxiv_table.selectedRow();
+        if (selected >= self.arxiv_papers.items.items.len) return false;
+
+        const paper = self.arxiv_papers.items.items[selected];
+
+        const body = std.fmt.allocPrint(
+            std.heap.page_allocator,
+            "Title: {s}\nCategory: {s}\nAuthors: {s}\nDate: {s}\nURL: {s}",
+            .{ paper.title, paper.category, paper.authors, paper.date, paper.url },
+        ) catch return false;
+        self.showDetailModal(ctx, "ArXiv", body, paper.url);
+        return true;
     }
 
     fn syncArxivViewport(self: *Model) void {
@@ -879,13 +1023,22 @@ const Model = struct {
         const selected = self.rss_table.selectedRow();
         if (selected >= self.rss_items.items.items.len) return;
 
-        var child = std.process.spawn(ctx.io, .{
-            .argv = &.{ "open", self.rss_items.items.items[selected].link },
-            .stdin = .ignore,
-            .stdout = .ignore,
-            .stderr = .ignore,
-        }) catch return;
-        _ = child.wait(ctx.io) catch {};
+        openUrl(ctx, self.rss_items.items.items[selected].link);
+    }
+
+    fn showSelectedRssDetails(self: *Model, ctx: *zz.Context) bool {
+        const selected = self.rss_table.selectedRow();
+        if (selected >= self.rss_items.items.items.len) return false;
+
+        const item = self.rss_items.items.items[selected];
+
+        const body = std.fmt.allocPrint(
+            std.heap.page_allocator,
+            "Title: {s}\nSource: {s}\nDate: {s}\nURL: {s}",
+            .{ item.title, item.source, item.pub_date, item.link },
+        ) catch return false;
+        self.showDetailModal(ctx, "RSS Item", body, item.link);
+        return true;
     }
 
     fn syncRssViewport(self: *Model) void {
@@ -905,13 +1058,22 @@ const Model = struct {
         const selected = self.trending_repos_table.selectedRow();
         if (selected >= self.trending_repos.items.items.len) return;
 
-        var child = std.process.spawn(ctx.io, .{
-            .argv = &.{ "open", self.trending_repos.items.items[selected].url },
-            .stdin = .ignore,
-            .stdout = .ignore,
-            .stderr = .ignore,
-        }) catch return;
-        _ = child.wait(ctx.io) catch {};
+        openUrl(ctx, self.trending_repos.items.items[selected].url);
+    }
+
+    fn showSelectedTrendingRepoDetails(self: *Model, ctx: *zz.Context) bool {
+        const selected = self.trending_repos_table.selectedRow();
+        if (selected >= self.trending_repos.items.items.len) return false;
+
+        const repo = self.trending_repos.items.items[selected];
+
+        const body = std.fmt.allocPrint(
+            std.heap.page_allocator,
+            "Repository: {s}\nLanguage: {s}\nStars: {s}\nDescription: {s}\nURL: {s}",
+            .{ repo.name, repo.language, repo.stars, repo.description, repo.url },
+        ) catch return false;
+        self.showDetailModal(ctx, "Trending Repository", body, repo.url);
+        return true;
     }
 
     fn syncTrendingReposViewport(self: *Model) void {
@@ -928,6 +1090,10 @@ const Model = struct {
     }
 
     pub fn view(self: *const Model, ctx: *const zz.Context) []const u8 {
+        if (self.detail_modal.isVisible()) {
+            return self.detail_modal.viewWithBackdrop(ctx.allocator, ctx.width, ctx.height) catch "Error rendering details";
+        }
+
         const tab_bar = self.renderTabBar(ctx) catch return "Error rendering tab bar";
         const content = self.renderContent(ctx) catch return "Error rendering content";
         const status = self.renderStatusBar(ctx) catch return "Error rendering status";
@@ -1050,7 +1216,7 @@ const Model = struct {
         else
             try std.fmt.allocPrint(
                 ctx.allocator,
-                "j/k Up/Down: select  PgUp/PgDn: page  g/G: ends  Enter: open  {d}/{d}",
+                "j/k Up/Down: select  PgUp/PgDn: page  g/G: ends  i: details  Enter: open  {d}/{d}",
                 .{ self.trending_repos_table.selectedRow() + 1, self.trending_repos_table.rows.items.len },
             );
         const help = try help_style.render(ctx.allocator, help_text);
@@ -1102,7 +1268,7 @@ const Model = struct {
         else
             try std.fmt.allocPrint(
                 ctx.allocator,
-                "j/k Up/Down: select  PgUp/PgDn: page  g/G: ends  Enter: open  {d}/{d}",
+                "j/k Up/Down: select  PgUp/PgDn: page  g/G: ends  i: details  Enter: open  {d}/{d}",
                 .{ self.hn_table.selectedRow() + 1, self.hn_table.rows.items.len },
             );
         const help = try help_style.render(ctx.allocator, help_text);
@@ -1164,7 +1330,7 @@ const Model = struct {
         else
             try std.fmt.allocPrint(
                 ctx.allocator,
-                "j/k Up/Down: select  PgUp/PgDn: page  g/G: ends  Enter: open  {d}/{d}",
+                "j/k Up/Down: select  PgUp/PgDn: page  g/G: ends  i: details  Enter: open  {d}/{d}",
                 .{ self.ph_table.selectedRow() + 1, self.ph_table.rows.items.len },
             );
         const help = try help_style.render(ctx.allocator, help_text);
@@ -1216,7 +1382,7 @@ const Model = struct {
         else
             try std.fmt.allocPrint(
                 ctx.allocator,
-                "j/k Up/Down: select  PgUp/PgDn: page  g/G: ends  Enter: open  {d}/{d}",
+                "j/k Up/Down: select  PgUp/PgDn: page  g/G: ends  i: details  Enter: open  {d}/{d}",
                 .{ self.arxiv_table.selectedRow() + 1, self.arxiv_table.rows.items.len },
             );
         const help = try help_style.render(ctx.allocator, help_text);
@@ -1268,7 +1434,7 @@ const Model = struct {
         else
             try std.fmt.allocPrint(
                 ctx.allocator,
-                "j/k Up/Down: select  PgUp/PgDn: page  g/G: ends  Enter: open  {d}/{d}",
+                "j/k Up/Down: select  PgUp/PgDn: page  g/G: ends  i: details  Enter: open  {d}/{d}",
                 .{ self.rss_table.selectedRow() + 1, self.rss_table.rows.items.len },
             );
         const help = try help_style.render(ctx.allocator, help_text);
@@ -1332,6 +1498,7 @@ const Model = struct {
         self.rss_viewport.deinit();
         self.rss_items.deinit();
         self.config.deinit();
+        if (self.detail_modal_body) |body| std.heap.page_allocator.free(body);
     }
 };
 
