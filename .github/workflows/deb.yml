@@ -2,7 +2,16 @@ name: Build Debian Package
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Package version"
+        required: true
+        default: "0.1.0"
+
   push:
+    branches:
+      - main
+      - feat-install-sh
     tags:
       - "v*.*.*"
 
@@ -25,9 +34,18 @@ jobs:
       - name: Build app
         run: zig build -Doptimize=ReleaseSafe
 
+      - name: Set version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_ENV
+          elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_ENV
+          else
+            echo "VERSION=0.1.0-dev.${GITHUB_RUN_NUMBER}" >> $GITHUB_ENV
+          fi
+
       - name: Create Debian package
         run: |
-          VERSION=${GITHUB_REF_NAME#v}
           APP_NAME="carbonara"
           ARCH="amd64"
           PACKAGE_DIR="${APP_NAME}_${VERSION}_${ARCH}"
@@ -52,11 +70,16 @@ jobs:
 
           dpkg-deb --build "$PACKAGE_DIR"
 
-          # Stable name for curl installer
           cp "${PACKAGE_DIR}.deb" "carbonara_amd64.deb"
 
+      - name: Upload .deb as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: carbonara-deb
+          path: "*.deb"
+
       - name: Upload .deb to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v3
         with:
-          files: |
-            carbonara_*.deb
+          files: "*.deb"
