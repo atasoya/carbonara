@@ -1,0 +1,85 @@
+name: Build Debian Package
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Package version"
+        required: true
+        default: "0.1.0"
+
+  push:
+    branches:
+      - main
+      - feat-install-sh
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-deb:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Build app
+        run: zig build -Doptimize=ReleaseSafe
+
+      - name: Set version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_ENV
+          elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_ENV
+          else
+            echo "VERSION=0.1.0-dev.${GITHUB_RUN_NUMBER}" >> $GITHUB_ENV
+          fi
+
+      - name: Create Debian package
+        run: |
+          APP_NAME="carbonara"
+          ARCH="amd64"
+          PACKAGE_DIR="${APP_NAME}_${VERSION}_${ARCH}"
+
+          mkdir -p "$PACKAGE_DIR/usr/bin"
+          mkdir -p "$PACKAGE_DIR/DEBIAN"
+
+          cp zig-out/bin/carbonara "$PACKAGE_DIR/usr/bin/carbonara"
+          chmod +x "$PACKAGE_DIR/usr/bin/carbonara"
+
+          cat > "$PACKAGE_DIR/DEBIAN/control" <<EOF
+          Package: carbonara
+          Version: ${VERSION}
+          Section: utils
+          Priority: optional
+          Architecture: amd64
+          Maintainer: Ata Atasoy <ataatasoy2013@gmail.com>
+          Description: Terminal dashboard for daily tech news
+           Carbonara is a TUI app for following GitHub, Hacker News,
+           Product Hunt, arXiv, and RSS feeds.
+          EOF
+
+          dpkg-deb --build "$PACKAGE_DIR"
+
+          cp "${PACKAGE_DIR}.deb" "carbonara_amd64.deb"
+
+      - name: Upload .deb as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: carbonara-deb
+          path: "*.deb"
+
+      - name: Upload .deb to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: "*.deb"
