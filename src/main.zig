@@ -1,5 +1,4 @@
 const std = @import("std");
-const Writer = std.Io.Writer;
 const zz = @import("zigzag");
 const trending = @import("trending.zig");
 const hackernews = @import("hackernews.zig");
@@ -8,6 +7,7 @@ const config_mod = @import("config.zig");
 const rss = @import("rss.zig");
 const ph = @import("producthunt.zig");
 const tabs_mod = @import("tabs.zig");
+const text = @import("ui/text.zig");
 
 const Tab = tabs_mod.Tab;
 
@@ -552,22 +552,12 @@ const Model = struct {
         self.trending_repos_table.clearRows();
         for (self.trending_repos.items.items) |repo| {
             self.trending_repos_table.addRow(.{
-                truncateForWidth(allocator, repo.name, repo_width) catch repo.name,
-                truncateForWidth(allocator, repo.language, lang_width) catch repo.language,
-                truncateForWidth(allocator, repo.stars, stars_width) catch repo.stars,
-                truncateForWidth(allocator, repo.description, desc_width) catch repo.description,
+                text.truncateForWidth(allocator, repo.name, repo_width) catch repo.name,
+                text.truncateForWidth(allocator, repo.language, lang_width) catch repo.language,
+                text.truncateForWidth(allocator, repo.stars, stars_width) catch repo.stars,
+                text.truncateForWidth(allocator, repo.description, desc_width) catch repo.description,
             }) catch {};
         }
-    }
-
-    fn truncateForWidth(allocator: std.mem.Allocator, text: []const u8, width: usize) ![]const u8 {
-        if (text.len <= width) return text;
-        if (width <= 3) return text[0..@min(text.len, width)];
-        return try std.fmt.allocPrint(allocator, "{s}...", .{text[0 .. width - 3]});
-    }
-
-    fn isTruncated(text: []const u8, width: usize) bool {
-        return text.len > width;
     }
 
     fn openUrl(ctx: *zz.Context, url: []const u8) void {
@@ -580,53 +570,8 @@ const Model = struct {
         _ = child.wait(ctx.io) catch {};
     }
 
-    fn detailModalBodyWidth(ctx: *const zz.Context) usize {
-        const modal_width = @max(@as(usize, 20), (@as(usize, ctx.width) * 8) / 10);
-        return @max(@as(usize, 14), modal_width -| 6);
-    }
-
-    fn wrapText(allocator: std.mem.Allocator, text: []const u8, width: usize) ![]const u8 {
-        var result: Writer.Allocating = .init(allocator);
-        const writer = &result.writer;
-        var line_iter = std.mem.splitScalar(u8, text, '\n');
-        var first_output_line = true;
-
-        while (line_iter.next()) |line| {
-            if (line.len == 0) {
-                if (!first_output_line) try writer.writeByte('\n');
-                first_output_line = false;
-                continue;
-            }
-
-            var remaining = line;
-            while (remaining.len > width) {
-                var split_at = width;
-                var i: usize = width;
-                while (i > 0) : (i -= 1) {
-                    if (remaining[i - 1] == ' ') {
-                        split_at = i - 1;
-                        break;
-                    }
-                }
-                if (split_at == 0) split_at = width;
-
-                if (!first_output_line) try writer.writeByte('\n');
-                try writer.writeAll(remaining[0..split_at]);
-                first_output_line = false;
-
-                remaining = std.mem.trim(u8, remaining[split_at..], " ");
-            }
-
-            if (!first_output_line) try writer.writeByte('\n');
-            try writer.writeAll(remaining);
-            first_output_line = false;
-        }
-
-        return result.toOwnedSlice();
-    }
-
     fn showDetailModal(self: *Model, ctx: *const zz.Context, title: []const u8, body: []const u8, url: []const u8) void {
-        const wrapped_body = wrapText(std.heap.page_allocator, body, detailModalBodyWidth(ctx)) catch body;
+        const wrapped_body = text.wrapText(std.heap.page_allocator, body, text.detailModalBodyWidth(ctx.width)) catch body;
         if (wrapped_body.ptr != body.ptr) std.heap.page_allocator.free(body);
         if (self.detail_modal_body) |old_body| std.heap.page_allocator.free(old_body);
         self.detail_modal_body = wrapped_body;
@@ -687,10 +632,10 @@ const Model = struct {
         self.ph_table.clearRows();
         for (self.ph_posts.items.items) |post| {
             self.ph_table.addRow(.{
-                truncateForWidth(allocator, post.name, name_width) catch post.name,
-                truncateForWidth(allocator, post.tagline, tagline_width) catch post.tagline,
-                truncateForWidth(allocator, post.votes, votes_width) catch post.votes,
-                truncateForWidth(allocator, post.comments, comments_width) catch post.comments,
+                text.truncateForWidth(allocator, post.name, name_width) catch post.name,
+                text.truncateForWidth(allocator, post.tagline, tagline_width) catch post.tagline,
+                text.truncateForWidth(allocator, post.votes, votes_width) catch post.votes,
+                text.truncateForWidth(allocator, post.comments, comments_width) catch post.comments,
             }) catch {};
         }
     }
@@ -777,10 +722,10 @@ const Model = struct {
         self.hn_table.clearRows();
         for (self.hn_stories.items.items) |story| {
             self.hn_table.addRow(.{
-                truncateForWidth(allocator, story.title, title_width) catch story.title,
-                truncateForWidth(allocator, story.by, by_width) catch story.by,
-                truncateForWidth(allocator, story.score, score_width) catch story.score,
-                truncateForWidth(allocator, story.comments, comments_width) catch story.comments,
+                text.truncateForWidth(allocator, story.title, title_width) catch story.title,
+                text.truncateForWidth(allocator, story.by, by_width) catch story.by,
+                text.truncateForWidth(allocator, story.score, score_width) catch story.score,
+                text.truncateForWidth(allocator, story.comments, comments_width) catch story.comments,
             }) catch {};
         }
     }
@@ -873,10 +818,10 @@ const Model = struct {
         self.arxiv_table.clearRows();
         for (self.arxiv_papers.items.items) |paper| {
             self.arxiv_table.addRow(.{
-                truncateForWidth(allocator, paper.title, title_width) catch paper.title,
-                truncateForWidth(allocator, paper.category, cat_width) catch paper.category,
-                truncateForWidth(allocator, paper.authors, authors_width) catch paper.authors,
-                truncateForWidth(allocator, paper.date, date_width) catch paper.date,
+                text.truncateForWidth(allocator, paper.title, title_width) catch paper.title,
+                text.truncateForWidth(allocator, paper.category, cat_width) catch paper.category,
+                text.truncateForWidth(allocator, paper.authors, authors_width) catch paper.authors,
+                text.truncateForWidth(allocator, paper.date, date_width) catch paper.date,
             }) catch {};
         }
     }
@@ -985,9 +930,9 @@ const Model = struct {
         self.rss_table.clearRows();
         for (self.rss_items.items.items) |item| {
             self.rss_table.addRow(.{
-                truncateForWidth(allocator, item.title, title_width) catch item.title,
-                truncateForWidth(allocator, item.source, source_width) catch item.source,
-                truncateForWidth(allocator, item.pub_date, date_width) catch item.pub_date,
+                text.truncateForWidth(allocator, item.title, title_width) catch item.title,
+                text.truncateForWidth(allocator, item.source, source_width) catch item.source,
+                text.truncateForWidth(allocator, item.pub_date, date_width) catch item.pub_date,
             }) catch {};
         }
     }

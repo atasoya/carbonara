@@ -145,6 +145,16 @@ pub fn build(b: *std.Build) void {
 
     const run_tabs_tests = b.addRunArtifact(tabs_tests);
 
+    const text_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/ui/text_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const run_text_tests = b.addRunArtifact(text_tests);
+
     // A top level step for running all tests. dependOn can be called multiple
     // times and since the two run steps do not depend on one another, this will
     // make the two of them run in parallel.
@@ -152,6 +162,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
     test_step.dependOn(&run_tabs_tests.step);
+    test_step.dependOn(&run_text_tests.step);
 
     const zigzag = b.dependency("zigzag", .{
         .target = target,
