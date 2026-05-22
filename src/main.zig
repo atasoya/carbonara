@@ -7,13 +7,12 @@ const config_mod = @import("config.zig");
 const rss = @import("rss.zig");
 const ph = @import("producthunt.zig");
 const tabs_mod = @import("tabs.zig");
+const layout = @import("ui/layout.zig");
 const text = @import("ui/text.zig");
 
 const Tab = tabs_mod.Tab;
 
 var product_hunt_token: ?[]const u8 = null;
-
-const max_panel_width = 140;
 
 fn fallbackTrendingRepos(allocator: std.mem.Allocator) !trending.RepoList {
     var repos = trending.RepoList.init(allocator);
@@ -498,11 +497,11 @@ const Model = struct {
     }
 
     fn panelWidth(ctx: *const zz.Context) u16 {
-        return @min(ctx.width -| 2, @as(u16, max_panel_width));
+        return layout.panelWidth(ctx.width);
     }
 
     fn viewportHeight(ctx: *const zz.Context) u16 {
-        return @max(@as(u16, 5), @min(ctx.height -| 14, @as(u16, 18)));
+        return layout.viewportHeight(ctx.height);
     }
 
     fn fetchTrendingTask(arg: FetchArg) ?Msg {
