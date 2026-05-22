@@ -49,7 +49,7 @@ Carbonara reads its configuration from `$HOME/.config/carbonara/config.json`.
 
 ### Setting up Product Hunt
 
-To enable Product Hunt, set the `PRODUCT_HUNT_TOKEN` environment variable to your token.
+To enable Product Hunt, set the `PRODUCT_HUNT_TOKEN` environment variable to your token (API Dashboard -> "Add an application" -> Developer Token).
 
 ```sh
 export PRODUCT_HUNT_TOKEN=your-token
