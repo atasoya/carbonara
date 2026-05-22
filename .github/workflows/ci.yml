@@ -19,5 +19,8 @@ jobs:
       - name: Format
         run: zig fmt --check src/*.zig
 
+      - name: Test
+        run: zig build test
+
       - name: Build
         run: zig build

@@ -135,12 +135,56 @@ pub fn build(b: *std.Build) void {
     // A run step that will run the second test executable.
     const run_exe_tests = b.addRunArtifact(exe_tests);
 
+    const tabs_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/tabs_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const run_tabs_tests = b.addRunArtifact(tabs_tests);
+
+    const text_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/ui/text_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const run_text_tests = b.addRunArtifact(text_tests);
+
+    const layout_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/ui/layout_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const run_layout_tests = b.addRunArtifact(layout_tests);
+
+    const fallback_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/fallback_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const run_fallback_tests = b.addRunArtifact(fallback_tests);
+
     // A top level step for running all tests. dependOn can be called multiple
     // times and since the two run steps do not depend on one another, this will
     // make the two of them run in parallel.
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
+    test_step.dependOn(&run_tabs_tests.step);
+    test_step.dependOn(&run_text_tests.step);
+    test_step.dependOn(&run_layout_tests.step);
+    test_step.dependOn(&run_fallback_tests.step);
 
     const zigzag = b.dependency("zigzag", .{
         .target = target,
