@@ -7,6 +7,9 @@ const arxiv = @import("arxiv.zig");
 const config_mod = @import("config.zig");
 const rss = @import("rss.zig");
 const ph = @import("producthunt.zig");
+const tabs_mod = @import("tabs.zig");
+
+const Tab = tabs_mod.Tab;
 
 var product_hunt_token: ?[]const u8 = null;
 
@@ -71,24 +74,6 @@ fn fallbackArxiv(allocator: std.mem.Allocator) !arxiv.PaperList {
 
     return papers;
 }
-
-const Tab = enum {
-    trendingRepos,
-    hackernews,
-    productHunt,
-    arxiv,
-    rss,
-
-    pub fn name(self: Tab) []const u8 {
-        return switch (self) {
-            .trendingRepos => "Trending Repos",
-            .hackernews => "Hacker News",
-            .productHunt => "Product Hunt",
-            .arxiv => "ArXiv",
-            .rss => "RSS Feeds",
-        };
-    }
-};
 
 const Model = struct {
     active_tab: Tab,
@@ -505,23 +490,11 @@ const Model = struct {
     }
 
     fn nextTab(self: *Model) void {
-        self.active_tab = switch (self.active_tab) {
-            .trendingRepos => .hackernews,
-            .hackernews => .productHunt,
-            .productHunt => .arxiv,
-            .arxiv => .rss,
-            .rss => .trendingRepos,
-        };
+        self.active_tab = tabs_mod.next(self.active_tab);
     }
 
     fn previousTab(self: *Model) void {
-        self.active_tab = switch (self.active_tab) {
-            .trendingRepos => .rss,
-            .hackernews => .trendingRepos,
-            .productHunt => .hackernews,
-            .arxiv => .productHunt,
-            .rss => .arxiv,
-        };
+        self.active_tab = tabs_mod.previous(self.active_tab);
     }
 
     fn panelWidth(ctx: *const zz.Context) u16 {
