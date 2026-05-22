@@ -8,6 +8,7 @@ const config_mod = @import("config.zig");
 const rss = @import("rss.zig");
 const ph = @import("producthunt.zig");
 const tabs_mod = @import("tabs.zig");
+const frame = @import("ui/frame.zig");
 const layout = @import("ui/layout.zig");
 const text = @import("ui/text.zig");
 
@@ -952,9 +953,9 @@ pub const Model = struct {
             return self.detail_modal.viewWithBackdrop(ctx.allocator, ctx.width, ctx.height) catch "Error rendering details";
         }
 
-        const tab_bar = self.renderTabBar(ctx) catch return "Error rendering tab bar";
+        const tab_bar = frame.renderTabBar(ctx, self.active_tab) catch return "Error rendering tab bar";
         const content = self.renderContent(ctx) catch return "Error rendering content";
-        const status = self.renderStatusBar(ctx) catch return "Error rendering status";
+        const status = frame.renderStatusBar(ctx) catch return "Error rendering status";
 
         const confirm_view = if (self.show_quit_confirm)
             self.confirm.view(ctx.allocator) catch ""
@@ -974,63 +975,6 @@ pub const Model = struct {
             .top,
             main_view,
         ) catch main_view;
-    }
-
-    fn renderTabBar(self: *const Model, ctx: *const zz.Context) ![]const u8 {
-        const tabs = [_]Tab{
-            .trendingRepos,
-            .hackernews,
-            .productHunt,
-            .arxiv,
-            .rss,
-        };
-
-        const content_width: usize = panelWidth(ctx) -| 4;
-        const slot_base = content_width / tabs.len;
-        const extra_slots = content_width % tabs.len;
-        var slots: [tabs.len][]const u8 = undefined;
-
-        for (tabs, 0..) |tab, i| {
-            const label = try std.fmt.allocPrint(
-                ctx.allocator,
-                "{d}:{s}",
-                .{ i + 1, tab.name() },
-            );
-
-            const slot_width = slot_base + if (i < extra_slots) @as(usize, 1) else 0;
-
-            if (tab == self.active_tab) {
-                var active_style = zz.Style{};
-                active_style = active_style
-                    .bold(true)
-                    .fg(zz.Color.hex("#4ECDC4"))
-                    .underline(true)
-                    .inline_style(true);
-
-                const styled = try active_style.render(ctx.allocator, label);
-                slots[i] = try zz.placeHorizontal(ctx.allocator, slot_width, .center, styled);
-            } else {
-                var tab_style = zz.Style{};
-                tab_style = tab_style
-                    .fg(zz.Color.gray(12))
-                    .inline_style(true);
-
-                const styled = try tab_style.render(ctx.allocator, label);
-                slots[i] = try zz.placeHorizontal(ctx.allocator, slot_width, .center, styled);
-            }
-        }
-
-        const bar_content = try zz.joinHorizontal(ctx.allocator, &slots);
-
-        var bar_style = zz.Style{};
-        bar_style = bar_style
-            .borderAll(zz.Border.rounded)
-            .borderForeground(zz.Color.gray(8))
-            .paddingLeft(1)
-            .paddingRight(1)
-            .width(panelWidth(ctx));
-
-        return bar_style.render(ctx.allocator, bar_content);
     }
 
     fn renderContent(self: *const Model, ctx: *const zz.Context) ![]const u8 {
@@ -1312,32 +1256,6 @@ pub const Model = struct {
 
         return box_style.render(ctx.allocator, content);
     }
-    fn renderStatusBar(self: *const Model, ctx: *const zz.Context) ![]const u8 {
-        _ = self;
-
-        var help_comp = zz.components.Help.init(ctx.allocator);
-        defer help_comp.deinit();
-
-        try help_comp.addBinding("1-5", "tabs");
-        try help_comp.addBinding("Tab", "next");
-        try help_comp.addBinding("Shift+Tab", "previous");
-        try help_comp.addBinding("q", "quit");
-
-        help_comp.setMaxWidth(ctx.width);
-
-        const help_view = try help_comp.view(ctx.allocator);
-
-        var status_style = zz.Style{};
-        status_style = status_style
-            .borderAll(zz.Border.rounded)
-            .borderForeground(zz.Color.gray(6))
-            .paddingLeft(1)
-            .paddingRight(1)
-            .width(panelWidth(ctx));
-
-        return status_style.render(ctx.allocator, help_view);
-    }
-
     pub fn deinit(self: *Model) void {
         self.runner.deinit();
         self.trending_repos_table.deinit();
