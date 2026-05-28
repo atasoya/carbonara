@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const endpoint = "https://api.producthunt.com/v2/api/graphql";
+pub const endpoint = "https://api.producthunt.com/v2/api/graphql";
 
 pub const Post = struct {
     name: []const u8,

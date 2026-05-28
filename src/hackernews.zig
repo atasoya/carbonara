@@ -1,8 +1,12 @@
 const std = @import("std");
 
-const topstories_endpoint = "https://hacker-news.firebaseio.com/v0/topstories.json?print=pretty";
+pub const topstories_endpoint = "https://hacker-news.firebaseio.com/v0/topstories.json?print=pretty";
 const item_endpoint_prefix = "https://hacker-news.firebaseio.com/v0/item/";
 const item_endpoint_suffix = ".json?print=pretty";
+
+pub fn itemEndpoint(buffer: []u8, id: i64) ![]const u8 {
+    return try std.fmt.bufPrint(buffer, "{s}{d}{s}", .{ item_endpoint_prefix, id, item_endpoint_suffix });
+}
 
 pub const Story = struct {
     title: []const u8,
@@ -94,7 +98,7 @@ pub fn fetch(allocator: std.mem.Allocator, io: std.Io) !StoryList {
         };
 
         var url_buf: [256]u8 = undefined;
-        const url = try std.fmt.bufPrint(&url_buf, "{s}{d}{s}", .{ item_endpoint_prefix, id, item_endpoint_suffix });
+        const url = try itemEndpoint(&url_buf, id);
 
         const story_result = std.process.run(allocator, io, .{
             .argv = &.{

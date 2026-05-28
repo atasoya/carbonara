@@ -13,6 +13,10 @@ const categories = [_][]const u8{
 const endpoint_prefix = "https://export.arxiv.org/api/query?search_query=cat:";
 const endpoint_suffix = "&start=0&max_results=5&sortBy=submittedDate&sortOrder=descending";
 
+pub fn endpointForCategory(buffer: []u8, category: []const u8) ![]const u8 {
+    return try std.fmt.bufPrint(buffer, "{s}{s}{s}", .{ endpoint_prefix, category, endpoint_suffix });
+}
+
 pub const Paper = struct {
     title: []const u8,
     category: []const u8,
@@ -68,7 +72,7 @@ pub fn fetch(allocator: std.mem.Allocator, io: std.Io) !PaperList {
 
     for (categories) |cat| {
         var url_buf: [256]u8 = undefined;
-        const url = std.fmt.bufPrint(&url_buf, "{s}{s}{s}", .{ endpoint_prefix, cat, endpoint_suffix }) catch continue;
+        const url = endpointForCategory(&url_buf, cat) catch continue;
 
         const result = std.process.run(allocator, io, .{
             .argv = &.{ "curl", "--silent", "--show-error", "--request", "GET", "--url", url, "--header", "Accept: application/atom+xml" },

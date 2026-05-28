@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const endpoint = "https://api.ossinsight.io/v1/trends/repos/?period=past_24_hours&language=All";
+pub const endpoint = "https://api.ossinsight.io/v1/trends/repos/?period=past_24_hours&language=All";
 
 pub const Repo = struct {
     name: []const u8,
